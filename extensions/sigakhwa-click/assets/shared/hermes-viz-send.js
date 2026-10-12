@@ -1,21 +1,21 @@
 /*
- * hermes-viz-send.js — window.HermesVizSend v1 (docs/INTERFACES.md §1). Owner: A (sigakhwa-click).
+ * hermes-viz-send.js — window.HermesVizSend v1 (README: Safety rules of the send path). Owner: A (sigakhwa-click).
  *
  * The ONLY way text reaches the model through this module is core's own global `send()` — the same
  * function the Enter key calls (static/messages.js:1384) — after the text has been placed in the
  * composer textarea `#msg` and an `input` event has been dispatched. The module never calls any
- * /api endpoint itself, never queues or steers while a turn is running, and never sends without a
+ * /api endpoint itself, refuses when local state reports a running turn, and never sends without a
  * user gesture upstream (callers only invoke send() from click handlers).
  *
  * Plain classic script, idempotent (safe to inject twice), never throws at load time when core
  * globals are missing: every core lookup is lazy and guarded. Core globals used (verified against
- * the pinned upstream, see docs/CORE-FACTS.md):
+ * the pinned upstream, see README: WebUI surfaces used):
  *   S (ui.js:8)             — S.session.session_id, S.activeProfile, S.busy, S.activeStreamId, S.pendingFiles
  *   $ (ui.js)               — $('msg') composer textarea
  *   send (messages.js:1384) — core send path; _sendInProgress (messages.js:1190) in-flight guard
  *   isCompressionUiRunning (ui.js:16275) — core's send() treats a running manual compression as
  *                             busy (messages.js:1438-1441) and would QUEUE; mirrored here as a refusal
- *   showToast (ui.js:9661)  — Korean toasts for every refusal
+ *   showToast (ui.js:9661)  — localized toasts for every refusal
  */
 (function () {
   'use strict';
@@ -28,20 +28,40 @@
   var INFLIGHT_TIMEOUT_MS = 20000;
   var EVENT_NAME = 'hermes-viz:send';
 
-  // Korean user-facing text (the WebUI user reads Korean); one message per refusal reason.
   var MESSAGES = {
-    empty: '보낼 내용이 없습니다',
-    too_long: '질문이 너무 깁니다 (최대 ' + MAX_TEXT + '자)',
-    no_session: '열려 있는 대화가 없습니다 — 대화를 먼저 열어 주세요',
-    stale_session: '이 그림은 다른 대화의 것입니다 — 새로고침 후 다시 시도하세요',
-    stale_profile: '이 그림은 다른 프로필에서 만든 것입니다 — 프로필을 확인한 뒤 다시 시도하세요',
-    busy: '답변 생성 중에는 보낼 수 없습니다',
-    locked: '지금은 입력창을 사용할 수 없습니다 (편집 중·첨부 대기·읽기 전용)',
-    duplicate: '같은 질문을 방금 보냈습니다',
-    core_missing: 'WebUI 전송 기능을 찾을 수 없습니다 — 페이지를 새로고침해 주세요',
-    send_failed: '전송에 실패했습니다 — 다시 시도해 주세요',
-    slash_command: '슬래시(/) 명령은 그림에서 보낼 수 없습니다'
+    ko: {
+      empty: '보낼 내용이 없습니다',
+      too_long: '질문이 너무 깁니다 (최대 ' + MAX_TEXT + '자)',
+      no_session: '열려 있는 대화가 없습니다 — 대화를 먼저 열어 주세요',
+      stale_session: '이 그림은 다른 대화의 것입니다 — 새로고침 후 다시 시도하세요',
+      stale_profile: '이 그림은 다른 프로필에서 만든 것입니다 — 프로필을 확인한 뒤 다시 시도하세요',
+      busy: '답변 생성 중에는 보낼 수 없습니다',
+      locked: '지금은 입력창을 사용할 수 없습니다 (편집 중·첨부 대기·읽기 전용)',
+      duplicate: '같은 질문을 방금 보냈습니다',
+      core_missing: 'WebUI 전송 기능을 찾을 수 없습니다 — 페이지를 새로고침해 주세요',
+      send_failed: '전송에 실패했습니다 — 다시 시도해 주세요',
+      slash_command: '슬래시(/) 명령은 그림에서 보낼 수 없습니다',
+      draft_present: '입력창의 초안을 먼저 보내거나 지워 주세요'
+    },
+    en: {
+      empty: 'There is nothing to send',
+      too_long: 'The question is too long (maximum 2000 characters)',
+      no_session: 'Open a conversation first',
+      stale_session: 'This diagram belongs to another conversation — refresh and try again',
+      stale_profile: 'This diagram belongs to another profile — check your profile and try again',
+      busy: 'Cannot send while a reply is being generated',
+      locked: 'The composer is unavailable (editing, pending attachments, or read-only)',
+      duplicate: 'You just sent the same question',
+      core_missing: 'WebUI send is unavailable — refresh the page',
+      send_failed: 'Sending failed — try again',
+      slash_command: 'Slash (/) commands cannot be sent from diagrams',
+      draft_present: 'Send or clear your draft first'
+    }
   };
+  function t(key) {
+    var lang = typeof document !== 'undefined' && document.documentElement ? document.documentElement.lang : '';
+    return MESSAGES[String(lang || '').toLowerCase().indexOf('ko') === 0 ? 'ko' : 'en'][key];
+  }
 
   var inflight = null;                 // Promise while a send is running (one at a time)
   var lastSent = { key: '', at: 0 };   // duplicate window keyed by (sessionId, text)
@@ -122,7 +142,7 @@
   function refuse(reason, source, text) {
     var ms = reason === 'duplicate' ? 1500 : 3200;
     var type = (reason === 'core_missing' || reason === 'send_failed') ? 'error' : (reason === 'duplicate' ? 'info' : 'warning');
-    toast(MESSAGES[reason] || MESSAGES.send_failed, ms, type);
+    toast(t(reason) || t('send_failed'), ms, type);
     emit(source, false, reason, text);
     return Promise.resolve({ ok: false, reason: reason });
   }
@@ -158,6 +178,8 @@
     // instead of hijacking the user's pending attachments.
     if (hasPendingAttachments(st)) return refuse('locked', source, text);
 
+    if (String(msg.value || '')) return refuse('draft_present', source, text);
+
     // Session ids never contain a newline, so (sessionId, text) is unambiguous with "\n".
     var key = target.sessionId + '\n' + text;
     var now = Date.now();
@@ -171,30 +193,11 @@
   }
 
   function performSend(doSend, msg, text, source, key, startedAt) {
-    var draft = String(msg.value || '');     // stash the user's own draft
-    var restored = false;
-    function restoreDraft() {
-      if (restored) return;
-      restored = true;
-      try {
-        // Core clears #msg synchronously when it accepts the text and resolves only after the
-        // /api/chat/start round trip, so the composer is empty and editable meanwhile. Restore the
-        // stashed draft only when the composer still holds what WE left there: '' (core accepted) or
-        // our own text (core refused silently / restored it after a failed POST). Anything else is a
-        // message the user began typing during the async window — never clobber it (same guard as
-        // core's _restoreComposerDraftAfterFailedSend, messages.js:1338-1340).
-        var cur = String(msg.value || '');
-        if (cur !== '' && cur !== text) return;
-        msg.value = draft;
-        dispatchInput(msg);   // core's draft persistence / send-button state follow
-      } catch (_) {}
-    }
     return new Promise(function (resolve) {
       var settled = false;
       function finish(ok, reason) {
         if (settled) return;
         settled = true;
-        restoreDraft();
         if (ok) {
           // The duplicate window is armed only by a send core actually accepted, so a retry after
           // send_failed / timeout is never refused as 'duplicate'.
@@ -202,7 +205,7 @@
           emit(source, true, undefined, text);
           resolve({ ok: true });
         } else {
-          toast(MESSAGES[reason] || MESSAGES.send_failed, 3200, 'error');
+          toast(t(reason) || t('send_failed'), 3200, 'error');
           emit(source, false, reason, text);
           resolve({ ok: false, reason: reason });
         }

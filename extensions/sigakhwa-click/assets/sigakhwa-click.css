@@ -161,3 +161,26 @@
 @media (prefers-reduced-motion: reduce) {
   .sigakhwa-click-toolbar, .sigakhwa-click-bound > rect, .sigakhwa-click-bound .label-container { transition: none; }
 }
+
+.sigakhwa-click-popover {
+  position: fixed;
+  z-index: 1300;
+  box-sizing: border-box;
+  width: 340px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: 12px;
+  border: 1px solid var(--border2, #cfc8b8);
+  border-radius: 12px;
+  background: var(--bg, #fffdf7);
+  color: var(--text, #1a1610);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+}
+.sigakhwa-click-popover pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 35vh;
+  overflow: auto;
+}
+.sigakhwa-click-popover button { min-width: 40px; min-height: 40px; margin-right: 8px; }

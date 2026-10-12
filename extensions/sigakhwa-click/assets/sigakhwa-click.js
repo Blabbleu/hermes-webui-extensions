@@ -2,14 +2,14 @@
  * sigakhwa-click — Hermes WebUI extension (id: sigakhwa-click). Owner: Engineer A.
  *
  * 1. Clickable diagram boxes: an assistant reply that contains a Mermaid flowchart plus a fenced
- *    ```sigakhwa-actions JSON block (docs/INTERFACES.md §4) gets its listed nodes bound. Clicking a
- *    bound <g class="node"> sends the node's prompt ONCE to the same conversation + active profile
+ *    ```sigakhwa-actions JSON block (README: How a reply makes boxes clickable) gets its listed nodes bound. Clicking a
+ *    bound <g class="node"> opens a confirmation before sending the node's prompt ONCE to the same conversation + active profile
  *    through window.HermesVizSend (shared/hermes-viz-send.js → core send(), the Enter path).
  * 2. Selection quick-ask: selecting text inside a settled assistant row shows a small floating
- *    toolbar (쉽게 설명 / 근거 확인 / 시각화 / 대안 비교, docs/INTERFACES.md §5); a button click sends
+ *    toolbar (쉽게 설명 / 근거 확인 / 시각화 / 대안 비교, README: How a reply makes boxes clickable); a button click sends
  *    the template through the same module and collapses the selection.
  *
- * Zero core edits. Core DOM surface used (pinned upstream, see docs/CORE-FACTS.md):
+ * Zero core edits. Core DOM surface used (pinned upstream, see README: WebUI surfaces used):
  *   #msgInner transcript container; .assistant-segment[data-msg-idx][data-session-msg-idx]
  *   (settled assistant rows, inside .msg-row.assistant-turn[data-session-id]); live rows are
  *   #liveAssistantTurn / [data-live-assistant-turn="1"] / [data-live-assistant="1"];
@@ -70,23 +70,46 @@
   var SEL_DIAGRAM = '.mermaid-block, .mermaid-rendered';
   var SEL_ACTIONS_CODE = 'pre > code.language-sigakhwa-actions';
 
-  // Korean UI strings
-  var UI = {
-    captionBound: function (n) { return '클릭 가능한 상자 ' + n + '개 · 상자를 누르면 질문이 Hermes에 전송됩니다'; },
+  // UI strings and fixed quick-ask templates follow Core's locale.
+  var STRINGS = { ko: {
+    captionBound: function (n) { return '클릭 가능한 상자 ' + n + '개 · 상자를 누르면 보낼 질문을 확인한 뒤 전송할 수 있습니다'; },
     captionNone: '클릭 가능한 상자 0개 · 도식과 연결된 상자를 찾지 못했습니다',
     showJson: 'JSON 보기',
     hideJson: 'JSON 숨기기',
-    nodeTitle: function (prompt, label) { return (label ? label + ' — ' : '') + '누르면 이 질문을 Hermes에 보냅니다: ' + prompt; },
+    nodeTitle: function (prompt, label) { return (label ? label + ' — ' : '') + '누르면 보낼 질문을 확인합니다'; },
     toolbarLabel: '선택한 내용으로 질문하기',
-    moduleMissing: '전송 모듈(HermesVizSend)을 찾을 수 없습니다 — 확장 설치를 확인하세요'
-  };
+    moduleMissing: '전송 모듈(HermesVizSend)을 찾을 수 없습니다 — 확장 설치를 확인하세요',
+    send: '보내기', cancel: '취소', notice: '이 질문을 이 대화에 보냅니다',
+    draft: '입력창의 초안을 먼저 보내거나 지워 주세요',
+    explainLabel: '쉽게 설명', evidenceLabel: '근거 확인', visualizeLabel: '시각화', compareLabel: '대안 비교',
+    explainPrompt: '다음 부분을 더 쉽게 설명해줘:\n\n',
+    evidencePrompt: '다음 내용의 근거를 확인해줘. 출처나 근거를 댈 수 없으면 그렇게 말해줘:\n\n',
+    visualizePrompt: '시각화\n\n',
+    comparePrompt: '다음 내용에 대한 대안 2~3개를 비교해줘:\n\n'
+  }, en: {
+    captionBound: function (n) { return n + ' clickable boxes · Tap a box to review its question'; },
+    captionNone: '0 clickable boxes · No matching diagram boxes found',
+    showJson: 'Show JSON', hideJson: 'Hide JSON',
+    nodeTitle: function (prompt, label) { return (label ? label + ' — ' : '') + 'Tap to review the question before sending'; },
+    toolbarLabel: 'Ask about selected text',
+    moduleMissing: 'Send module (HermesVizSend) unavailable — check the extension installation',
+    send: 'Send', cancel: 'Cancel', notice: 'This question will be sent to this conversation',
+    draft: 'Send or clear your draft first',
+    explainLabel: 'Explain simply', evidenceLabel: 'Check evidence', visualizeLabel: 'Visualize', compareLabel: 'Compare alternatives',
+    explainPrompt: 'Explain the following more simply:\n\n',
+    evidencePrompt: 'Check the evidence for the following. If you cannot provide sources or evidence, say so:\n\n',
+    visualizePrompt: 'Visualize\n\n',
+    comparePrompt: 'Compare 2–3 alternatives for the following:\n\n'
+  } };
+  function t(key) {
+    var lang = typeof document !== 'undefined' && document.documentElement ? document.documentElement.lang : '';
+    lang = String(lang || '').toLowerCase();
+    return STRINGS[lang.indexOf('ko') === 0 ? 'ko' : 'en'][key];
+  }
 
   // §5 templates. {sel} is quoted as a markdown blockquote.
   var TEMPLATES = [
-    { key: 'explain', label: '쉽게 설명', render: function (q) { return '다음 부분을 더 쉽게 설명해줘:\n\n' + q; } },
-    { key: 'evidence', label: '근거 확인', render: function (q) { return '다음 내용의 근거를 확인해줘. 출처나 근거를 댈 수 없으면 그렇게 말해줘:\n\n' + q; } },
-    { key: 'visualize', label: '시각화', render: function (q) { return '시각화\n\n' + q; } },
-    { key: 'compare', label: '대안 비교', render: function (q) { return '다음 내용에 대한 대안 2~3개를 비교해줘:\n\n' + q; } }
+    { key: 'explain' }, { key: 'evidence' }, { key: 'visualize' }, { key: 'compare' }
   ];
 
   // ── small helpers ────────────────────────────────────────────────────────
@@ -190,10 +213,10 @@
 
   // ── §5 templates (pure) ──────────────────────────────────────────────────
   function normalizeSelection(s) {
-    return String(s || '')
+    return String(s || '').slice(0, 4000)
       .replace(/ /g, ' ')
       .replace(/\r\n?/g, '\n')
-      .replace(/[ \t]+\n/g, '\n')
+      .replace(/[ \t]+/g, function (run, off, str) { return str.charAt(off + run.length) === '\n' ? '' : run; })
       .replace(/\n{3,}/g, '\n\n')
       .trim();
   }
@@ -212,17 +235,17 @@
   // renderTemplate(key, selectedText) → string | null. Selection is trimmed to ≤1000 chars and the
   // whole message is kept ≤2000 chars (blockquote prefixes add up on many short lines).
   function renderTemplate(key, selection) {
-    var t = templateByKey(key);
-    if (!t) return null;
+    var tpl = templateByKey(key);
+    if (!tpl) return null;
     var budget = MAX_SELECTION;
     var sel = clipText(selection, budget);
     if (!sel) return null;
-    var out = t.render(quote(sel));
+    var out = t(key + 'Prompt') + quote(sel);
     var guard = 0;
     while (out.length > MAX_SEND && budget > 40 && guard++ < 12) {
       budget = Math.floor(budget * 0.8);
       sel = clipText(selection, budget);
-      out = t.render(quote(sel));
+      out = t(key + 'Prompt') + quote(sel);
     }
     return out.length <= MAX_SEND ? out : null;
   }
@@ -318,8 +341,8 @@
       g.classList.add(CLS.bound);
       g.setAttribute('role', 'button');
       g.setAttribute('tabindex', '0');
-      g.setAttribute('aria-label', UI.nodeTitle(n.prompt, n.label));
-      setNodeTitle(g, UI.nodeTitle(n.prompt, n.label));
+      g.setAttribute('aria-label', t('nodeTitle')(n.prompt, n.label));
+      setNodeTitle(g, t('nodeTitle')(n.prompt, n.label));
       addBadge(g);
     }
     return { count: count, available: idx.ids };
@@ -339,18 +362,18 @@
     icon.textContent = '?';
     var text = document.createElement('span');
     text.className = CLS.captionText;
-    text.textContent = count ? UI.captionBound(count) : UI.captionNone;
+    text.textContent = count ? t('captionBound')(count) : t('captionNone');
     var toggle = document.createElement('button');
     toggle.type = 'button';
     toggle.className = CLS.captionToggle;
-    toggle.textContent = UI.showJson;
+    toggle.textContent = t('showJson');
     toggle.setAttribute('aria-expanded', 'false');
     toggle.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
       var hidden = pre.classList.toggle(CLS.hidden);
       if (header) header.classList.toggle(CLS.hidden, hidden);
-      toggle.textContent = hidden ? UI.showJson : UI.hideJson;
+      toggle.textContent = hidden ? t('showJson') : t('hideJson');
       toggle.setAttribute('aria-expanded', hidden ? 'false' : 'true');
     });
     caption.appendChild(icon);
@@ -546,6 +569,8 @@
   }
   function onClick(e) {
     if (!e || !e.isTrusted) return;                 // synthetic clicks never send
+    if (popover && popover.el.contains(elementOf(e.target))) return;
+    if (popover) closePopover();
     if (closest(e.target, '.' + CLS.toolbar)) return;   // toolbar buttons have their own handlers
     var node = resolveBoundNode(e);
     if (!node) return;                              // not ours → core zoom/lightbox keeps working
@@ -556,9 +581,10 @@
   }
   function onKeydown(e) {
     if (!e || !e.isTrusted) return;
+    if (e.key === 'Escape') { closePopover(); return; }
     if (e.key !== 'Enter' && e.key !== ' ') return;
     var node = closest(e.target, '[' + ATTR.prompt + ']');
-    if (!node || node !== e.target) return;
+    if (!node || node !== e.target || document.activeElement !== node) return;
     e.preventDefault();
     e.stopPropagation();
     activateNode(node);
@@ -577,20 +603,79 @@
       setTimeout(function () { node.classList.remove(CLS.flash); }, 900);
     } catch (_) {}
   }
+  var popover = null;
+  function closePopover() {
+    if (!popover) return;
+    clearInterval(popover.timer);
+    popover.el.remove();
+    popover = null;
+  }
   function activateNode(node) {
+    closePopover();
+    var mod = sendModule();
+    if (!mod) { toast(t('moduleMissing'), 3200, 'error'); return; }
     var prompt = node.getAttribute(ATTR.prompt) || '';
     var bound = { sessionId: node.getAttribute(ATTR.sid) || '', profile: node.getAttribute(ATTR.profile) || 'default' };
-    var mod = sendModule();
-    if (!mod) { toast(UI.moduleMissing, 3200, 'error'); return Promise.resolve({ ok: false, reason: 'core_missing' }); }
-    closeLightboxOf(node);
-    // HermesVizSend re-validates bound vs the current S (stale session/profile → refused + toast).
-    return mod.send({ text: prompt, source: 'click-node', bound: bound }).then(function (res) {
-      if (res && res.ok) flashNode(node);
-      return res;
-    });
+    var el = document.createElement('div');
+    el.className = 'sigakhwa-click-popover';
+    el.setAttribute('role', 'dialog');
+    el.setAttribute('aria-label', t('nodeTitle')(prompt, node.getAttribute(ATTR.label)));
+    var label = document.createElement('strong');
+    var boxLabel = node.querySelector('.nodeLabel, .label, :scope > text');
+    var actionLabel = node.getAttribute(ATTR.label);
+    label.textContent = (boxLabel ? boxLabel.textContent.trim() : nodeIdFromDomId(node.id) || '')
+      + (actionLabel ? ' — ' + actionLabel : '');
+    var full = document.createElement('pre');
+    full.textContent = prompt;
+    var notice = document.createElement('p');
+    var sendBtn = document.createElement('button');
+    sendBtn.type = 'button';
+    sendBtn.textContent = t('send');
+    sendBtn.setAttribute('data-sigakhwa-send', '1');
+    var cancel = document.createElement('button');
+    cancel.type = 'button';
+    cancel.textContent = t('cancel');
+    function updateDraft() {
+      var msg = document.getElementById('msg');
+      sendBtn.disabled = !!(msg && String(msg.value || ''));
+      notice.textContent = sendBtn.disabled ? t('draft') : t('notice');
+    }
+    function confirm(e) {
+      if (!e.isTrusted || sendBtn.disabled || !popover || popover.el !== el) return;
+      if (e.type === 'keydown' && (document.activeElement !== sendBtn || (e.key !== 'Enter' && e.key !== ' '))) return;
+      e.preventDefault();
+      e.stopPropagation();
+      closePopover();
+      closeLightboxOf(node);
+      mod.send({ text: prompt, source: 'click-node', bound: bound }).then(function (res) {
+        if (res && res.ok) flashNode(node);
+      });
+    }
+    sendBtn.addEventListener('click', confirm);
+    sendBtn.addEventListener('keydown', confirm);
+    cancel.addEventListener('click', closePopover);
+    el.appendChild(label);
+    el.appendChild(full);
+    el.appendChild(notice);
+    el.appendChild(sendBtn);
+    el.appendChild(cancel);
+    (document.body || document.documentElement).appendChild(el);
+    popover = { el: el, timer: setInterval(function () {
+      var current = mod.currentTarget();
+      if (!node.isConnected || !current || current.sessionId !== bound.sessionId || current.profile !== bound.profile) closePopover();
+      else updateDraft();
+    }, 100) };
+    updateDraft();
+    var rect = node.getBoundingClientRect();
+    var box = el.getBoundingClientRect();
+    var vw = window.innerWidth;
+    var vh = window.innerHeight;
+    el.style.left = Math.round(Math.max(8, Math.min(rect.right + 8, vw - (box.width || Math.min(340, vw - 16)) - 8))) + 'px';
+    el.style.top = Math.round(Math.max(8, Math.min(rect.top, vh - (box.height || 240) - 8))) + 'px';
+    cancel.focus();
   }
 
-  // ── selection quick-ask toolbar ──────────────────────────────────────────
+  // Selection quick-ask toolbar.
   var tb = { el: null, text: '', bound: null, raf: 0, interactingUntil: 0 };
 
   function ensureToolbar() {
@@ -598,7 +683,7 @@
     var el = document.createElement('div');
     el.className = CLS.toolbar;
     el.setAttribute('role', 'toolbar');
-    el.setAttribute('aria-label', UI.toolbarLabel);
+    el.setAttribute('aria-label', t('toolbarLabel'));
     el.setAttribute('data-sigakhwa-toolbar', '1');
     // Keep the selection alive while the pointer lands on a button (mousedown would collapse it).
     // Cancelling pointerdown/mousedown does NOT suppress the following `click`. `touchstart` is
@@ -609,16 +694,16 @@
     el.addEventListener('pointerdown', keep);
     el.addEventListener('mousedown', keep);
     for (var i = 0; i < TEMPLATES.length; i++) {
-      (function (t) {
+      (function (tpl) {
         var btn = document.createElement('button');
         btn.type = 'button';
-        btn.textContent = t.label;
-        btn.setAttribute('data-sigakhwa-template', t.key);
+        btn.textContent = t(tpl.key + 'Label');
+        btn.setAttribute('data-sigakhwa-template', tpl.key);
         btn.addEventListener('click', function (ev) {
           ev.preventDefault();
           ev.stopPropagation();
           if (!ev.isTrusted) return;                // never send without a real gesture
-          onTemplateClick(t.key);
+          onTemplateClick(tpl.key);
         });
         el.appendChild(btn);
       })(TEMPLATES[i]);
@@ -667,6 +752,9 @@
   }
   function showToolbar(info) {
     var el = ensureToolbar();
+    el.setAttribute('aria-label', t('toolbarLabel'));
+    var buttons = el.querySelectorAll('[data-sigakhwa-template]');
+    for (var i = 0; i < buttons.length; i++) buttons[i].textContent = t(buttons[i].getAttribute('data-sigakhwa-template') + 'Label');
     tb.text = info.text;
     tb.bound = captureTarget(info.row);         // captured when the toolbar is shown
     if (!tb.bound) { hideToolbar(); return; }
@@ -691,6 +779,7 @@
     tb.raf = raf(updateToolbar);
   }
   function onDocumentPointerDown(e) {
+    if (e.isTrusted && popover && !popover.el.contains(elementOf(e.target))) closePopover();
     if (tb.el && closest(e.target, '.' + CLS.toolbar)) return;
     hideToolbar();
   }
@@ -699,7 +788,7 @@
     var bound = tb.bound;
     var mod = sendModule();
     if (!text || !bound) { hideToolbar(); return Promise.resolve({ ok: false, reason: 'empty' }); }
-    if (!mod) { toast(UI.moduleMissing, 3200, 'error'); return Promise.resolve({ ok: false, reason: 'core_missing' }); }
+    if (!mod) { toast(t('moduleMissing'), 3200, 'error'); return Promise.resolve({ ok: false, reason: 'core_missing' }); }
     return mod.send({ text: text, source: 'selection', bound: bound }).then(function (res) {
       if (res && res.ok) {
         try { var sel = window.getSelection && window.getSelection(); if (sel && sel.removeAllRanges) sel.removeAllRanges(); } catch (_) {}
@@ -733,7 +822,7 @@
     document.addEventListener('touchend', scheduleToolbarUpdate);
     document.addEventListener('keyup', function (e) { if (e && /Arrow|Shift|Home|End/.test(String(e.key || ''))) scheduleToolbarUpdate(); });
     document.addEventListener('scroll', hideToolbar, true);
-    window.addEventListener('resize', hideToolbar);
+    window.addEventListener('resize', function () { hideToolbar(); closePopover(); });
     bindAll();
     return true;
   }
@@ -745,7 +834,7 @@
     nodeIdFromDomId: nodeIdFromDomId,
     renderTemplate: renderTemplate,
     normalizeSelection: normalizeSelection,
-    templates: Object.freeze(TEMPLATES.map(function (t) { return Object.freeze({ key: t.key, label: t.label }); })),
+    templates: Object.freeze(TEMPLATES.map(function (tpl) { return Object.freeze({ key: tpl.key, label: t(tpl.key + 'Label') }); })),
     bindSegment: bindSegment,
     bindAll: bindAll,
     install: install,

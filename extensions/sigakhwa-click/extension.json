@@ -1,7 +1,7 @@
 {
   "id": "sigakhwa-click",
   "name": "Sigakhwa Click-to-Ask",
-  "description": "Turns boxes of a Mermaid diagram into one-tap follow-up questions. When an assistant reply carries a ```sigakhwa-actions block, each bound box sends its prepared prompt once, into the same conversation and profile, through WebUI's own send path. Selecting text in a reply offers four quick asks: explain simply, check the evidence, visualize, compare alternatives.",
+  "description": "Turns boxes of a Mermaid diagram into follow-up questions with confirmation. When an assistant reply carries a ```sigakhwa-actions block, each bound box previews its prepared prompt before sending once, into the same conversation and profile, through WebUI's own send path. Selecting text in a reply offers four quick asks: explain simply, check the evidence, visualize, compare alternatives.",
   "version": "0.1.0",
   "author": "johnDEFI",
   "assets": {
@@ -26,7 +26,10 @@
   "permissions": {
     "webui_api": {
       "read": [],
-      "write": []
+      "write": [
+        "/api/chat/start",
+        "/api/session/draft"
+      ]
     },
     "webui_navigation": false,
     "dom": {
