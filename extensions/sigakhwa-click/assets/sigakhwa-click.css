@@ -1,0 +1,228 @@
+/* sigakhwa-click — extension-scoped styles only (every selector carries the sigakhwa-click- prefix).
+   Mermaid injects an inline <style> with #<svg-id> .node rect rules; the id selector beats a plain
+   class, so the node affordance rules use !important on purpose. Theme tokens (--accent, --bg,
+   --text, --muted, --border2, --accent-bg, --accent-hover) come from core's style.css and follow
+   light/dark/skins automatically; the fallbacks only matter outside the WebUI. */
+
+/* ── bound diagram nodes ──────────────────────────────────────────────────── */
+.sigakhwa-click-bound { cursor: pointer !important; }
+.sigakhwa-click-bound > rect,
+.sigakhwa-click-bound > polygon,
+.sigakhwa-click-bound > circle,
+.sigakhwa-click-bound > ellipse,
+.sigakhwa-click-bound > path,
+.sigakhwa-click-bound .label-container {
+  stroke: var(--accent, #b8860b) !important;
+  stroke-width: 2.5px !important;
+  stroke-dasharray: 7 3;
+  transition: filter .12s ease, stroke-dasharray .12s ease;
+}
+.sigakhwa-click-bound:hover > rect,
+.sigakhwa-click-bound:hover > polygon,
+.sigakhwa-click-bound:hover > circle,
+.sigakhwa-click-bound:hover > ellipse,
+.sigakhwa-click-bound:hover > path,
+.sigakhwa-click-bound:hover .label-container,
+.sigakhwa-click-bound:focus-visible > rect,
+.sigakhwa-click-bound:focus-visible .label-container {
+  stroke-dasharray: none;
+  filter: brightness(1.12) drop-shadow(0 0 4px var(--accent, #b8860b));
+}
+.sigakhwa-click-bound:focus-visible { outline: none; }
+/* brief confirmation after a successful send */
+.sigakhwa-click-flash > rect,
+.sigakhwa-click-flash > polygon,
+.sigakhwa-click-flash > circle,
+.sigakhwa-click-flash .label-container {
+  animation: sigakhwa-click-flash .9s ease-out 1;
+}
+@keyframes sigakhwa-click-flash {
+  0% { filter: brightness(1.6) drop-shadow(0 0 8px var(--accent, #b8860b)); }
+  100% { filter: none; }
+}
+.sigakhwa-click-badge { pointer-events: none; }
+/* Mermaid's id-scoped node rules (#<svg-id> .node circle / text) beat a plain class, so the badge
+   needs !important like the node affordance rules above. */
+.sigakhwa-click-badge circle {
+  fill: var(--accent, #b8860b) !important;
+  stroke: var(--bg, #ffffff) !important;
+  stroke-width: 1.5px !important;
+}
+.sigakhwa-click-badge text {
+  /* --bg on --accent: 13.7:1 on the dark theme's #FFD700 (white would be 1.4:1), 3.2:1 on light. */
+  fill: var(--bg, #ffffff) !important;
+  font: 700 10px/1 system-ui, -apple-system, "Segoe UI", sans-serif;
+  text-anchor: middle;
+  dominant-baseline: central;
+}
+
+/* ── collapsed actions block → caption ────────────────────────────────────── */
+.sigakhwa-click-hidden { display: none !important; }
+.sigakhwa-click-caption {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 10px;
+  margin: 6px 0 10px;
+  padding: 7px 12px;
+  border: 1px dashed var(--border2, #cfc8b8);
+  border-radius: 10px;
+  background: var(--accent-bg, rgba(184, 134, 11, 0.08));
+  color: var(--muted, #5c5344);
+  font-size: 12px;
+  line-height: 1.4;
+}
+.sigakhwa-click-caption-icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  align-items: center;
+  justify-content: center;
+  background: var(--accent, #b8860b);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 700;
+  flex: 0 0 auto;
+}
+.sigakhwa-click-caption-text { flex: 1 1 auto; min-width: 0; }
+.sigakhwa-click-caption-toggle {
+  flex: 0 0 auto;
+  border: 1px solid var(--border2, #cfc8b8);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--muted, #5c5344);
+  font: inherit;
+  font-size: 11px;
+  padding: 2px 9px;
+  cursor: pointer;
+}
+.sigakhwa-click-caption-toggle:hover { background: var(--hover-bg, rgba(0, 0, 0, 0.05)); color: var(--text, inherit); }
+.sigakhwa-click-caption--empty { border-style: dotted; opacity: .85; }
+
+/* ── selection quick-ask toolbar ──────────────────────────────────────────── */
+.sigakhwa-click-toolbar {
+  position: fixed;
+  z-index: 1201; /* core's .selected-text-action-group is 1200 and sits ABOVE the selection; ours sits below */
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  max-width: calc(100vw - 16px);
+  border: 1px solid var(--border2, #cfc8b8);
+  border-radius: 999px;
+  background: var(--bg, #fffdf7);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22), 0 0 0 1px var(--surface, transparent);
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: visibility 0s linear .12s, opacity .12s ease, transform .12s ease;
+  user-select: none;
+  -webkit-user-select: none;
+}
+.sigakhwa-click-toolbar.is-visible {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+  transition-delay: 0s;
+}
+.sigakhwa-click-toolbar button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 32px;
+  padding: 7px 11px;
+  border: 1px solid transparent;
+  border-radius: 999px;
+  background: transparent;
+  color: var(--text, #1a1610);
+  font-family: inherit;
+  font-size: 12px;
+  font-weight: 700;
+  line-height: 1;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.sigakhwa-click-toolbar button:hover,
+.sigakhwa-click-toolbar button:focus-visible {
+  background: var(--accent-bg, rgba(184, 134, 11, 0.08));
+  border-color: var(--accent-hover, #996f08);
+}
+.sigakhwa-click-toolbar button:focus-visible { outline: 2px solid var(--focus-ring, var(--accent, #b8860b)); outline-offset: 2px; }
+.sigakhwa-click-toolbar button:disabled { opacity: .5; cursor: default; }
+
+@media (max-width: 480px) {
+  .sigakhwa-click-toolbar { border-radius: 16px; padding: 5px; gap: 4px; }
+  .sigakhwa-click-toolbar button { min-height: 40px; padding: 8px 10px; font-size: 13px; }
+  .sigakhwa-click-caption { font-size: 11px; padding: 6px 10px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sigakhwa-click-toolbar, .sigakhwa-click-bound > rect, .sigakhwa-click-bound .label-container { transition: none; }
+}
+
+.sigakhwa-click-popover {
+  position: fixed;
+  /* Above Core's .img-lightbox (z-index 9999): a box tapped inside the zoomed diagram must show
+     its preview on top, never behind the backdrop. */
+  z-index: 10000;
+  box-sizing: border-box;
+  width: 340px;
+  max-width: calc(100vw - 16px);
+  max-height: calc(100vh - 16px);
+  overflow: auto;
+  padding: 14px;
+  border: 1px solid var(--border2, #cfc8b8);
+  border-radius: 12px;
+  background: var(--bg, #fffdf7);
+  color: var(--text, #1a1610);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+  font-family: inherit;
+}
+.sigakhwa-click-popover-title {
+  display: block;
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.sigakhwa-click-popover-prompt {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border2, #cfc8b8);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  max-height: 35vh;
+  overflow: auto;
+}
+.sigakhwa-click-popover-notice {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted, #5c5344);
+}
+.sigakhwa-click-popover-actions { margin-top: 12px; }
+.sigakhwa-click-popover .app-dialog-btn { min-width: 88px; min-height: 40px; }
+.sigakhwa-click-popover .app-dialog-btn:disabled { opacity: .5; cursor: default; transform: none; }
+
+/* Touch: 44 px targets, matching Core's (pointer: coarse) controls. */
+@media (pointer: coarse) {
+  .sigakhwa-click-popover .app-dialog-btn,
+  .sigakhwa-click-toolbar button { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sigakhwa-click-flash > rect,
+  .sigakhwa-click-flash > polygon,
+  .sigakhwa-click-flash > circle,
+  .sigakhwa-click-flash .label-container { animation: none; }
+}
