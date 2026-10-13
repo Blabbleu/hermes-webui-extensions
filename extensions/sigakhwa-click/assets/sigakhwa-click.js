@@ -369,6 +369,7 @@
     toggle.className = CLS.captionToggle;
     toggle.textContent = t('showJson');
     toggle.setAttribute('aria-expanded', 'false');
+    containActivationKeys(toggle);
     toggle.addEventListener('click', function (e) {
       e.preventDefault();
       e.stopPropagation();
@@ -615,6 +616,15 @@
       setTimeout(function () { node.classList.remove(CLS.flash); }, 900);
     } catch (_) {}
   }
+  // Core's bubbling document keydown treats Enter as "Allow once" whenever its approval card is
+  // visible and focus is not in a text field (static/boot.js, "Enter on approval card"). Enter/Space
+  // on our own buttons must never reach it. Native button activation is a default action, so
+  // stopping propagation keeps Cancel/Send/toggle/quick-ask working.
+  function containActivationKeys(el) {
+    el.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') e.stopPropagation();
+    });
+  }
   var popover = null;
   var popoverSeq = 0;
   function closePopover(opts) {
@@ -645,8 +655,9 @@
     var boxLabel = node.querySelector('.nodeLabel, .label, :scope > text');
     var actionLabel = node.getAttribute(ATTR.label);
     var boxText = boxLabel ? boxLabel.textContent.trim() : (nodeIdFromDomId(node.id) || '');
-    // Skip the action label when it only repeats the box text ("③ WebUI — WebUI").
-    var showAction = actionLabel && boxText.replace(/^[^\p{L}\p{N}]+/u, '').trim() !== actionLabel.trim();
+    // Skip the action label when it only repeats the box text ("③ WebUI — WebUI"). Strip leading
+    // non-letters/non-decimal-digits first: circled numerals like ③ are category No, not Nd.
+    var showAction = actionLabel && boxText.replace(/^[^\p{L}\p{Nd}]+/u, '').trim() !== actionLabel.trim();
     label.textContent = boxText + (showAction ? ' — ' + actionLabel : '');
     var full = document.createElement('div');
     full.className = 'sigakhwa-click-popover-prompt';
@@ -694,6 +705,7 @@
     el.appendChild(full);
     el.appendChild(notice);
     el.appendChild(actions);
+    containActivationKeys(el);
     (document.body || document.documentElement).appendChild(el);
     popover = { el: el, node: node, timer: setInterval(function () {
       var current = mod.currentTarget();
@@ -720,6 +732,7 @@
     el.setAttribute('role', 'toolbar');
     el.setAttribute('aria-label', t('toolbarLabel'));
     el.setAttribute('data-sigakhwa-toolbar', '1');
+    containActivationKeys(el);
     // Keep the selection alive while the pointer lands on a button (mousedown would collapse it).
     // Cancelling pointerdown/mousedown does NOT suppress the following `click`. `touchstart` is
     // deliberately NOT cancelled: per the Touch Events spec a cancelled touchstart suppresses the
@@ -790,10 +803,18 @@
     var h = box.height || 40;
     var left = rect.left + (rect.width / 2) - (w / 2);
     left = Math.min(Math.max(gap, left), Math.max(gap, vw - w - gap));
-    // Below the selection (core's own reply/refine group sits above it); flip above when clipped,
-    // clearing Core's group by its measured rect (it is taller under a coarse pointer).
+    // Below the selection (core's own reply/refine group sits above it); flip above when it would
+    // cross the composer (or the viewport bottom), clearing Core's group by its measured rect (it is
+    // taller under a coarse pointer). Selecting the last line of the latest reply is the common case,
+    // and the composer must stay tappable.
+    var limit = vh;
+    try {
+      var composer = document.getElementById('composerWrap');
+      var cr = composer && composer.getBoundingClientRect ? composer.getBoundingClientRect() : null;
+      if (cr && cr.height > 0 && cr.top > 0 && cr.top < limit) limit = cr.top;
+    } catch (_) {}
     var top = rect.bottom + gap;
-    if (top + h > vh - gap) {
+    if (top + h > limit - gap) {
       var core = coreSelectionGroupRect();
       top = core ? Math.min(rect.top, core.top) - h - gap : rect.top - h - gap - CORE_GROUP_RESERVE;
       top = Math.max(gap, top);
