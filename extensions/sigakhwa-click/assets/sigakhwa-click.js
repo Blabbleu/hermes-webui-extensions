@@ -582,7 +582,18 @@
   }
   function onKeydown(e) {
     if (!e || !e.isTrusted) return;
-    if (e.key === 'Escape') { closePopover({ restoreFocus: true }); return; }
+    if (e.key === 'Escape') {
+      // Only a preview that owns focus consumes Escape and hands focus back to its box; with focus
+      // elsewhere (composer, Core's lightbox) the preview just closes and Core still sees the key.
+      if (!popover || e.defaultPrevented) return;
+      var ownsFocus = popover.el.contains(document.activeElement);
+      closePopover({ restoreFocus: ownsFocus });
+      if (ownsFocus) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+      }
+      return;
+    }
     if (e.key !== 'Enter' && e.key !== ' ') return;
     var node = closest(e.target, '[' + ATTR.prompt + ']');
     if (!node || node !== e.target || document.activeElement !== node) return;
@@ -633,8 +644,10 @@
     label.className = 'sigakhwa-click-popover-title';
     var boxLabel = node.querySelector('.nodeLabel, .label, :scope > text');
     var actionLabel = node.getAttribute(ATTR.label);
-    label.textContent = (boxLabel ? boxLabel.textContent.trim() : nodeIdFromDomId(node.id) || '')
-      + (actionLabel ? ' — ' + actionLabel : '');
+    var boxText = boxLabel ? boxLabel.textContent.trim() : (nodeIdFromDomId(node.id) || '');
+    // Skip the action label when it only repeats the box text ("③ WebUI — WebUI").
+    var showAction = actionLabel && boxText.replace(/^[^\p{L}\p{N}]+/u, '').trim() !== actionLabel.trim();
+    label.textContent = boxText + (showAction ? ' — ' + actionLabel : '');
     var full = document.createElement('div');
     full.className = 'sigakhwa-click-popover-prompt';
     full.id = promptId;

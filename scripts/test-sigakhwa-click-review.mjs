@@ -367,3 +367,43 @@ test('maintainer review: flipped toolbar clears Core selection group by its meas
     assert.ok(parseInt(tb.style.top, 10) + 96 <= 760 - 52 - 8, 'fallback reserve clears a 52px group');
   } finally { h.dom.window.close(); }
 });
+
+test('maintainer review: Escape restores focus only when the preview owns it, and only then consumes the key', () => {
+  const h = harness();
+  try {
+    const seen = [];
+    h.w.document.addEventListener('keydown', e => seen.push(e.key));   // stands in for Core's own Escape handling
+    h.node.setAttribute('tabindex', '0');
+    // Focus moved to the composer while the preview is open: close it, keep focus, let Core see Escape.
+    gesture(h, h.node);
+    h.msg.focus();
+    gesture(h, h.msg, 'keydown', { key: 'Escape' });
+    assert.equal(pop(h), null);
+    assert.equal(h.w.document.activeElement, h.msg, 'Escape must not steal focus from the composer');
+    assert.deepEqual(seen.slice(), ['Escape'], 'an Escape the preview does not own still reaches Core');
+    // Focus inside the preview: close, return focus to the box, consume the key.
+    seen.length = 0;
+    gesture(h, h.node);
+    assert.ok(pop(h).contains(h.w.document.activeElement));
+    gesture(h, h.w.document.activeElement, 'keydown', { key: 'Escape' });
+    assert.equal(pop(h), null);
+    assert.equal(h.w.document.activeElement, h.node);
+    assert.equal(seen.length, 0, 'an Escape the preview owns is consumed');
+  } finally { h.dom.window.close(); }
+});
+
+test('maintainer review: title skips an action label that repeats the box text; badge beats Mermaid id rules', () => {
+  const h = harness();
+  try {
+    h.node.setAttribute('data-sigakhwa-label', 'Box A');
+    gesture(h, h.node);
+    assert.equal(pop(h).querySelector('.sigakhwa-click-popover-title').textContent, 'Box A');
+    gesture(h, pop(h).querySelector('button:not([data-sigakhwa-send])'));
+    h.node.setAttribute('data-sigakhwa-label', 'Details');
+    gesture(h, h.node);
+    assert.equal(pop(h).querySelector('.sigakhwa-click-popover-title').textContent, 'Box A — Details');
+  } finally { h.dom.window.close(); }
+  const css = readFileSync(new URL('assets/sigakhwa-click.css', base), 'utf8');
+  assert.match(css, /\.sigakhwa-click-badge circle \{[^}]*fill: var\(--accent, #b8860b\) !important/);
+  assert.match(css, /\.sigakhwa-click-badge text \{[^}]*fill: var\(--bg, #ffffff\) !important/, 'badge glyph uses --bg so it stays legible on the dark theme accent');
+});
