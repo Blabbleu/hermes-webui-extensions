@@ -553,3 +553,44 @@ test('maintainer review: a keyboard confirm swallows that key\'s autorepeat; the
     await wait(60);
   } finally { h.dom.window.close(); }
 });
+
+test('maintainer review: keyboard quick-asks, Cancel and box activation latch their key too', async () => {
+  const h = harness();
+  try {
+    const d = h.w.document;
+    const coreSaw = [];
+    d.addEventListener('keydown', e => coreSaw.push(e.key + (e.repeat ? ':repeat' : '')));   // Core's document shortcuts
+    // Quick-ask via keyboard: Enter on a focused toolbar button, then the toolbar hides on success.
+    const range = d.createRange();
+    range.selectNodeContents(d.getElementById('selected'));
+    range.getBoundingClientRect = () => ({ left: 10, top: 20, bottom: 40, width: 100, height: 20 });
+    const sel = h.w.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    sel.getRangeAt(0).getBoundingClientRect = range.getBoundingClientRect;
+    d.dispatchEvent(new h.w.Event('selectionchange'));
+    await wait(60);
+    const btn = d.querySelector('[data-sigakhwa-toolbar].is-visible button');
+    btn.focus();
+    gesture(h, btn, 'keydown', { key: 'Enter' });
+    gesture(h, btn);                                      // native activation of the focused button
+    await wait(0);
+    assert.equal(h.calls.length, 1, 'quick-ask sent once');
+    for (let i = 0; i < 3; i++) gesture(h, d.body, 'keydown', { key: 'Enter', repeat: true });
+    assert.deepEqual(coreSaw.slice(), [], 'held Enter after a keyboard quick-ask never reaches Core');
+    // Box activation via keyboard: the held key must not go on to activate the focused Cancel.
+    h.node.setAttribute('tabindex', '0');
+    h.node.focus();
+    gesture(h, h.node, 'keydown', { key: ' ' });
+    assert.ok(pop(h), 'preview opened');
+    const cancelSaw = [];
+    const focusedCancel = d.activeElement;
+    focusedCancel.addEventListener('keydown', e => cancelSaw.push(e.key));
+    for (let i = 0; i < 3; i++) gesture(h, focusedCancel, 'keydown', { key: ' ', repeat: true });
+    assert.deepEqual(cancelSaw.slice(), [], 'held Space never reaches (and natively activates) the focused Cancel');
+    assert.ok(pop(h), 'preview stays open');
+    assert.deepEqual(coreSaw.slice(), []);
+    gesture(h, pop(h).querySelector('button:not([data-sigakhwa-send])'));
+    await wait(60);
+  } finally { h.dom.window.close(); }
+});

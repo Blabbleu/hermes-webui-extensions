@@ -613,6 +613,7 @@
     if (!node || node !== e.target || document.activeElement !== node) return;
     e.preventDefault();
     e.stopPropagation();
+    keyLatch = e.key;   // a held key must not go on to activate the Cancel button that now has focus
     activateNode(node);
   }
   function closeLightboxOf(node) {
@@ -633,9 +634,15 @@
   // visible and focus is not in a text field (static/boot.js, "Enter on approval card"). Enter/Space
   // on our own buttons must never reach it. Native button activation is a default action, so
   // stopping propagation keeps Cancel/Send/toggle/quick-ask working.
+  // The same press also latches (see onKeydown): when activation removes or hides the focused
+  // control (quick-ask hides the toolbar, Cancel closes the preview), the rest of a held key would
+  // otherwise land on <body> or re-activate whatever gets focus next.
   function containActivationKeys(el) {
     el.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') e.stopPropagation();
+      if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
+        e.stopPropagation();
+        if (e.isTrusted && !e.repeat) keyLatch = e.key;
+      }
     });
   }
   var popover = null;
