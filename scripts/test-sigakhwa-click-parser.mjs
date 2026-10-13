@@ -1,19 +1,19 @@
 'use strict';
 // node --test — pure-function tests for the §4 sigakhwa-actions parser, the Mermaid id helper and
-// the §5 selection templates. The extension script is eval'd with a bare fake window and
+// the §5 selection templates. The extension script runs via vm.runInThisContext with a bare fake window and
 // a minimal Korean locale document, so its DOM install path is skipped.
 
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import fs from 'node:fs';
+import vm from 'node:vm';
 
 const SOURCE = fs.readFileSync(new URL('../extensions/sigakhwa-click/assets/sigakhwa-click.js', import.meta.url), 'utf8');
 
 function load() {
   global.document = { documentElement: { lang: 'ko' }, readyState: 'loading', addEventListener: function () {} };
   global.window = {};
-  // eslint-disable-next-line no-eval
-  eval(SOURCE);
+  vm.runInThisContext(SOURCE, { filename: 'sigakhwa-click.js' });
   return global.window.SigakhwaClick;
 }
 
@@ -25,7 +25,7 @@ test('load: frozen global, idempotent, no install without a document', () => {
   assert.equal(api.version, 1);
   assert.ok(Object.isFrozen(api));
   const first = api;
-  eval(SOURCE);
+  vm.runInThisContext(SOURCE, { filename: 'sigakhwa-click.js' });
   assert.equal(global.window.SigakhwaClick, first);
   assert.equal(api.install(), false, 'install refuses when document/MutationObserver are missing');
 });

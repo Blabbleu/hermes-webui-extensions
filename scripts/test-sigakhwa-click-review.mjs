@@ -99,7 +99,7 @@ test('popover: tap previews text only; trusted Send sends exactly once', async (
   try {
     gesture(h, h.node);
     assert.equal(h.calls.length, 0);
-    assert.equal(pop(h).querySelector('pre').textContent, prompt);
+    assert.equal(pop(h).querySelector('.sigakhwa-click-popover-prompt').textContent, prompt);
     assert.equal(pop(h).querySelector('img'), null);
     assert.ok(pop(h).textContent.includes('Details'));
     assert.ok(pop(h).querySelector('strong').textContent.includes('Box A'));
@@ -121,7 +121,7 @@ test('popover: cancel, Escape, outside click, one popover, synthetic node reject
     gesture(h, h.node, 'click', {}, false);
     assert.equal(pop(h), null);
     gesture(h, h.node);
-    gesture(h, pop(h).querySelectorAll('button')[1]);
+    gesture(h, pop(h).querySelector('button:not([data-sigakhwa-send])'));
     assert.equal(pop(h), null);
     gesture(h, h.node);
     gesture(h, h.w.document.body, 'keydown', { key: 'Escape' });
@@ -276,5 +276,94 @@ test('send completion never restores or persists a draft into another conversati
     assert.equal((await result).ok, true);
     assert.equal(h.msg.value, 'Draft in conversation B');
     assert.equal(inputs, 1);
+  } finally { h.dom.window.close(); }
+});
+
+test('maintainer review: confirm refuses a box removed before the watcher noticed', async () => {
+  const h = harness();
+  try {
+    gesture(h, h.node);
+    const btn = sendButton(h);
+    h.node.remove();                           // re-render/removal inside the 100 ms watcher window
+    gesture(h, btn);
+    await wait(0);
+    assert.equal(h.calls.length, 0, 'a disconnected box must never send');
+    assert.equal(pop(h), null, 'the stale preview closes');
+  } finally { h.dom.window.close(); }
+});
+
+test('maintainer review: node lookups are prototype-free (constructor / __proto__ / toString)', () => {
+  const h = harness();
+  try {
+    const parse = h.api.parseActions;
+    for (const evil of ['constructor', 'toString', 'hasOwnProperty', 'valueOf']) {
+      const res = parse(JSON.stringify({ v: 1, nodes: { [evil]: { prompt: 'x' }, A: { prompt: 'y' } } }), ['A']);
+      assert.equal(res.ok, true, evil);
+      assert.deepEqual(Array.from(res.nodes, n => n.id), ['A'], evil + ' must not pass known-node membership');
+    }
+    // A real diagram node whose Mermaid id is "constructor" binds instead of being skipped or throwing.
+    const svg = h.w.document.querySelector('svg');
+    const g = h.w.document.createElementNS('http://www.w3.org/2000/svg', 'g');
+    g.setAttribute('class', 'node');
+    g.setAttribute('id', 'flowchart-constructor-1');
+    g.innerHTML = '<rect width="80" height="40"/><text class="label">Ctor</text>';
+    svg.appendChild(g);
+    h.w.document.querySelector('code').textContent = JSON.stringify({ v: 1, nodes: { constructor: { prompt: 'ctor prompt' }, A: { prompt: 'a prompt' } } });
+    h.w.document.querySelector('pre').removeAttribute('data-sigakhwa-state');
+    h.w.document.querySelectorAll('[data-sigakhwa-caption]').forEach(n => n.remove());
+    h.api.bindAll();
+    assert.equal(g.getAttribute('data-sigakhwa-prompt'), 'ctor prompt');
+  } finally { h.dom.window.close(); }
+});
+
+test('maintainer review: Core dialog buttons, Cancel first, focus returns to the box', () => {
+  const h = harness();
+  try {
+    h.node.setAttribute('tabindex', '0');
+    gesture(h, h.node);
+    const buttons = [...pop(h).querySelectorAll('button')];
+    assert.deepEqual(buttons.map(b => b.textContent), ['Cancel', 'Send']);
+    assert.ok(buttons[0].classList.contains('app-dialog-btn'));
+    assert.ok(buttons[1].classList.contains('app-dialog-btn') && buttons[1].classList.contains('confirm'));
+    const desc = pop(h).getAttribute('aria-describedby');
+    assert.ok(desc && h.w.document.getElementById(desc).textContent === prompt, 'dialog is described by the prompt');
+    gesture(h, buttons[0]);
+    assert.equal(pop(h), null);
+    assert.equal(h.w.document.activeElement, h.node, 'Cancel returns focus to the box');
+    gesture(h, h.node);
+    gesture(h, h.w.document.body, 'keydown', { key: 'Escape' });
+    assert.equal(h.w.document.activeElement, h.node, 'Escape returns focus to the box');
+  } finally { h.dom.window.close(); }
+});
+
+test('maintainer review: popover stacks above Core lightbox; coarse targets are 44px', () => {
+  const css = readFileSync(new URL('assets/sigakhwa-click.css', base), 'utf8');
+  const block = css.slice(css.indexOf('.sigakhwa-click-popover {'));
+  const z = Number((/z-index:\s*(\d+)/.exec(block) || [])[1]);
+  assert.ok(z > 9999, 'popover z-index ' + z + ' must exceed Core .img-lightbox (9999)');
+  assert.match(css, /@media \(pointer: coarse\)[^}]*\.sigakhwa-click-popover \.app-dialog-btn[^}]*min-height: 44px/);
+});
+
+test('maintainer review: flipped toolbar clears Core selection group by its measured rect', () => {
+  const h = harness();
+  try {
+    const d = h.w.document;
+    const core = d.createElement('div');
+    core.className = 'selected-text-action-group visible';
+    d.body.appendChild(core);
+    // Selection near the bottom of an 800px viewport forces the flip; Core's group sits 52px above it.
+    Object.defineProperty(h.w, 'innerHeight', { value: 800, configurable: true });
+    Object.defineProperty(h.w, 'innerWidth', { value: 390, configurable: true });
+    core.getBoundingClientRect = () => ({ top: 700, bottom: 752, left: 100, right: 220, width: 120, height: 52 });
+    const sel = { top: 760, bottom: 780, left: 50, right: 250, width: 200, height: 20 };
+    const tb = d.createElement('div');
+    tb.getBoundingClientRect = () => ({ width: 260, height: 96 });
+    h.api.positionToolbar(tb, sel);
+    const top = parseInt(tb.style.top, 10);
+    assert.ok(top + 96 <= 700 - 8 + 0.5, 'toolbar bottom ' + (top + 96) + ' must clear Core group top 700');
+    // Without a visible Core group the flip still reserves room for the 52px coarse-pointer group.
+    core.remove();
+    h.api.positionToolbar(tb, sel);
+    assert.ok(parseInt(tb.style.top, 10) + 96 <= 760 - 52 - 8, 'fallback reserve clears a 52px group');
   } finally { h.dom.window.close(); }
 });

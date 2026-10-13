@@ -165,7 +165,8 @@
     }
     var known = null;
     if (Array.isArray(knownNodeIds)) {
-      known = {};
+      // Prototype-free: a node id such as "constructor" or "__proto__" must not inherit membership.
+      known = Object.create(null);
       for (var k = 0; k < knownNodeIds.length; k++) known[String(knownNodeIds[k])] = true;
     }
     var out = [];
@@ -198,7 +199,7 @@
     return m[1] || null;
   }
   function indexSvgNodes(svg) {
-    var map = {};
+    var map = Object.create(null);   // prototype-free lookup (see parseActions)
     var ids = [];
     if (!svg || !svg.querySelectorAll) return { map: map, ids: ids };
     var gs = svg.querySelectorAll('g.node[id]');
@@ -581,7 +582,7 @@
   }
   function onKeydown(e) {
     if (!e || !e.isTrusted) return;
-    if (e.key === 'Escape') { closePopover(); return; }
+    if (e.key === 'Escape') { closePopover({ restoreFocus: true }); return; }
     if (e.key !== 'Enter' && e.key !== ' ') return;
     var node = closest(e.target, '[' + ATTR.prompt + ']');
     if (!node || node !== e.target || document.activeElement !== node) return;
@@ -604,11 +605,17 @@
     } catch (_) {}
   }
   var popover = null;
-  function closePopover() {
+  var popoverSeq = 0;
+  function closePopover(opts) {
     if (!popover) return;
+    var origin = popover.node;
     clearInterval(popover.timer);
     popover.el.remove();
     popover = null;
+    // Cancel / Escape hand focus back to the box that opened the preview, like Core's own dialogs.
+    if (opts && opts.restoreFocus && origin && origin.isConnected && typeof origin.focus === 'function') {
+      try { origin.focus({ preventScroll: true }); } catch (_) {}
+    }
   }
   function activateNode(node) {
     closePopover();
@@ -620,20 +627,30 @@
     el.className = 'sigakhwa-click-popover';
     el.setAttribute('role', 'dialog');
     el.setAttribute('aria-label', t('nodeTitle')(prompt, node.getAttribute(ATTR.label)));
+    var promptId = 'sigakhwa-click-prompt-' + (++popoverSeq);
+    el.setAttribute('aria-describedby', promptId);
     var label = document.createElement('strong');
+    label.className = 'sigakhwa-click-popover-title';
     var boxLabel = node.querySelector('.nodeLabel, .label, :scope > text');
     var actionLabel = node.getAttribute(ATTR.label);
     label.textContent = (boxLabel ? boxLabel.textContent.trim() : nodeIdFromDomId(node.id) || '')
       + (actionLabel ? ' — ' + actionLabel : '');
-    var full = document.createElement('pre');
+    var full = document.createElement('div');
+    full.className = 'sigakhwa-click-popover-prompt';
+    full.id = promptId;
     full.textContent = prompt;
     var notice = document.createElement('p');
+    notice.className = 'sigakhwa-click-popover-notice';
+    var actions = document.createElement('div');
+    actions.className = 'app-dialog-actions sigakhwa-click-popover-actions';
     var sendBtn = document.createElement('button');
     sendBtn.type = 'button';
+    sendBtn.className = 'app-dialog-btn confirm';
     sendBtn.textContent = t('send');
     sendBtn.setAttribute('data-sigakhwa-send', '1');
     var cancel = document.createElement('button');
     cancel.type = 'button';
+    cancel.className = 'app-dialog-btn';
     cancel.textContent = t('cancel');
     function updateDraft() {
       var msg = document.getElementById('msg');
@@ -645,6 +662,9 @@
       if (e.type === 'keydown' && (document.activeElement !== sendBtn || (e.key !== 'Enter' && e.key !== ' '))) return;
       e.preventDefault();
       e.stopPropagation();
+      // The box may have been re-rendered or removed since the preview opened (the 100 ms watcher
+      // below can lag a fast confirm); never send for a box that is no longer on screen.
+      if (!node.isConnected) { closePopover(); return; }
       closePopover();
       closeLightboxOf(node);
       mod.send({ text: prompt, source: 'click-node', bound: bound }).then(function (res) {
@@ -653,14 +673,16 @@
     }
     sendBtn.addEventListener('click', confirm);
     sendBtn.addEventListener('keydown', confirm);
-    cancel.addEventListener('click', closePopover);
+    cancel.addEventListener('click', function () { closePopover({ restoreFocus: true }); });
+    // Core dialog order: Cancel, then the primary action (Tab from the focused Cancel reaches Send).
+    actions.appendChild(cancel);
+    actions.appendChild(sendBtn);
     el.appendChild(label);
     el.appendChild(full);
     el.appendChild(notice);
-    el.appendChild(sendBtn);
-    el.appendChild(cancel);
+    el.appendChild(actions);
     (document.body || document.documentElement).appendChild(el);
-    popover = { el: el, timer: setInterval(function () {
+    popover = { el: el, node: node, timer: setInterval(function () {
       var current = mod.currentTarget();
       if (!node.isConnected || !current || current.sessionId !== bound.sessionId || current.profile !== bound.profile) closePopover();
       else updateDraft();
@@ -735,6 +757,17 @@
     if (!rect || (!rect.width && !rect.height)) return null;
     return { text: text, rect: rect, row: startRow };
   }
+  // Core's selection Reply/Refine group (static/style.css .selected-text-action-group): 40 px tall
+  // under a fine pointer, 52 px under a coarse one. Measure it when visible; otherwise reserve room.
+  var CORE_GROUP_RESERVE = 60;
+  function coreSelectionGroupRect() {
+    try {
+      var g = document.querySelector('.selected-text-action-group.visible');
+      if (!g) return null;
+      var r = g.getBoundingClientRect();
+      return (r && r.height > 0) ? r : null;
+    } catch (_) { return null; }
+  }
   function positionToolbar(el, rect) {
     var gap = 8;
     var vw = window.innerWidth || 0;
@@ -744,9 +777,14 @@
     var h = box.height || 40;
     var left = rect.left + (rect.width / 2) - (w / 2);
     left = Math.min(Math.max(gap, left), Math.max(gap, vw - w - gap));
-    // Below the selection (core's own reply/refine group sits above it); flip above when clipped.
+    // Below the selection (core's own reply/refine group sits above it); flip above when clipped,
+    // clearing Core's group by its measured rect (it is taller under a coarse pointer).
     var top = rect.bottom + gap;
-    if (top + h > vh - gap) top = Math.max(gap, rect.top - h - gap - 48);
+    if (top + h > vh - gap) {
+      var core = coreSelectionGroupRect();
+      top = core ? Math.min(rect.top, core.top) - h - gap : rect.top - h - gap - CORE_GROUP_RESERVE;
+      top = Math.max(gap, top);
+    }
     el.style.left = Math.round(left) + 'px';
     el.style.top = Math.round(top) + 'px';
   }
@@ -837,6 +875,7 @@
     templates: Object.freeze(TEMPLATES.map(function (tpl) { return Object.freeze({ key: tpl.key, label: t(tpl.key + 'Label') }); })),
     bindSegment: bindSegment,
     bindAll: bindAll,
+    positionToolbar: positionToolbar,
     install: install,
     limits: Object.freeze({ MAX_NODES: MAX_NODES, MAX_PROMPT: MAX_PROMPT, MAX_LABEL: MAX_LABEL, MAX_SELECTION: MAX_SELECTION, MAX_SEND: MAX_SEND })
   });

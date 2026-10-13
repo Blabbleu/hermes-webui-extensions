@@ -164,23 +164,62 @@
 
 .sigakhwa-click-popover {
   position: fixed;
-  z-index: 1300;
+  /* Above Core's .img-lightbox (z-index 9999): a box tapped inside the zoomed diagram must show
+     its preview on top, never behind the backdrop. */
+  z-index: 10000;
   box-sizing: border-box;
   width: 340px;
   max-width: calc(100vw - 16px);
   max-height: calc(100vh - 16px);
   overflow: auto;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid var(--border2, #cfc8b8);
   border-radius: 12px;
   background: var(--bg, #fffdf7);
   color: var(--text, #1a1610);
   box-shadow: 0 8px 24px rgba(0, 0, 0, .22);
+  font-family: inherit;
 }
-.sigakhwa-click-popover pre {
+.sigakhwa-click-popover-title {
+  display: block;
+  margin: 0 0 8px;
+  font-size: 14px;
+  font-weight: 700;
+  line-height: 1.4;
+  overflow-wrap: anywhere;
+}
+.sigakhwa-click-popover-prompt {
+  margin: 0 0 8px;
+  padding: 8px 10px;
+  border: 1px solid var(--border2, #cfc8b8);
+  border-radius: 8px;
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
   max-height: 35vh;
   overflow: auto;
 }
-.sigakhwa-click-popover button { min-width: 40px; min-height: 40px; margin-right: 8px; }
+.sigakhwa-click-popover-notice {
+  margin: 0;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted, #5c5344);
+}
+.sigakhwa-click-popover-actions { margin-top: 12px; }
+.sigakhwa-click-popover .app-dialog-btn { min-width: 88px; min-height: 40px; }
+.sigakhwa-click-popover .app-dialog-btn:disabled { opacity: .5; cursor: default; transform: none; }
+
+/* Touch: 44 px targets, matching Core's (pointer: coarse) controls. */
+@media (pointer: coarse) {
+  .sigakhwa-click-popover .app-dialog-btn,
+  .sigakhwa-click-toolbar button { min-height: 44px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sigakhwa-click-flash > rect,
+  .sigakhwa-click-flash > polygon,
+  .sigakhwa-click-flash > circle,
+  .sigakhwa-click-flash .label-container { animation: none; }
+}
