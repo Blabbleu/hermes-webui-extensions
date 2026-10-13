@@ -594,3 +594,35 @@ test('maintainer review: keyboard quick-asks, Cancel and box activation latch th
     await wait(60);
   } finally { h.dom.window.close(); }
 });
+
+test('maintainer review: latched keys are independent (a Space activation keeps a held Enter blocked)', async () => {
+  const h = harness();
+  try {
+    const d = h.w.document;
+    const coreSaw = [];
+    d.addEventListener('keydown', e => coreSaw.push(e.key + (e.repeat ? ':repeat' : '')));
+    const range = d.createRange();
+    range.selectNodeContents(d.getElementById('selected'));
+    range.getBoundingClientRect = () => ({ left: 10, top: 20, bottom: 40, width: 100, height: 20 });
+    const sel = h.w.getSelection();
+    sel.removeAllRanges();
+    sel.addRange(range);
+    sel.getRangeAt(0).getBoundingClientRect = range.getBoundingClientRect;
+    d.dispatchEvent(new h.w.Event('selectionchange'));
+    await wait(60);
+    const toggle = d.querySelector('.sigakhwa-click-caption-toggle');
+    toggle.focus();
+    gesture(h, toggle, 'keydown', { key: 'Enter' });            // Enter pressed (and held) on the toggle
+    const btn = d.querySelector('[data-sigakhwa-toolbar].is-visible button');
+    btn.focus();
+    gesture(h, btn, 'keydown', { key: ' ' });                   // Space on a quick-ask while Enter is still held
+    gesture(h, btn);                                            // its activation sends and hides the toolbar
+    await wait(0);
+    assert.equal(h.calls.length, 1);
+    for (let i = 0; i < 3; i++) gesture(h, d.body, 'keydown', { key: 'Enter', repeat: true });
+    assert.deepEqual(coreSaw.slice(), [], 'held Enter stays blocked after the Space activation');
+    gesture(h, d.body, 'keydown', { key: 'Enter' });              // a fresh Enter is Core's again
+    assert.deepEqual(coreSaw.slice(), ['Enter']);
+    await wait(60);
+  } finally { h.dom.window.close(); }
+});

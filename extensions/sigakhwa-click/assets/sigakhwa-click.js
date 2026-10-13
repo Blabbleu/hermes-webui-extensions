@@ -584,17 +584,18 @@
   // After a keyboard confirm, the autorepeat of that same key press is swallowed. Wherever focus
   // lands next, Core binds Enter to "send" (composer) or to "Allow once" (approval card), and neither
   // may act on a press the user aimed at our Send button. The next non-repeat press of that key is a
-  // new, deliberate press: it releases the latch and is handled normally.
-  var keyLatch = null;
+  // new, deliberate press: it releases the latch and is handled normally. Keys latch independently,
+  // so a Space activation can't release the protection of an Enter that is still held.
+  var latchedKeys = new Set();
   function onKeydown(e) {
     if (!e || !e.isTrusted) return;
-    if (keyLatch && e.key === keyLatch) {
+    if (latchedKeys.has(e.key)) {
       if (e.repeat) {
         e.preventDefault();
         e.stopImmediatePropagation();
         return;
       }
-      keyLatch = null;
+      latchedKeys.delete(e.key);
     }
     if (e.key === 'Escape') {
       // Only a preview that owns focus consumes Escape and hands focus back to its box; with focus
@@ -613,7 +614,7 @@
     if (!node || node !== e.target || document.activeElement !== node) return;
     e.preventDefault();
     e.stopPropagation();
-    keyLatch = e.key;   // a held key must not go on to activate the Cancel button that now has focus
+    latchedKeys.add(e.key);   // a held key must not go on to activate the Cancel button that now has focus
     activateNode(node);
   }
   function closeLightboxOf(node) {
@@ -641,7 +642,7 @@
     el.addEventListener('keydown', function (e) {
       if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') {
         e.stopPropagation();
-        if (e.isTrusted && !e.repeat) keyLatch = e.key;
+        if (e.isTrusted && !e.repeat) latchedKeys.add(e.key);
       }
     });
   }
@@ -711,7 +712,7 @@
       // "Allow once" shortcut. If the composer can't take focus, keep the preview open on Cancel and
       // let the send module explain the refusal.
       if (e.type === 'keydown') {
-        keyLatch = e.key;
+        latchedKeys.add(e.key);
         var composer = document.getElementById('msg');
         if (!composer || composer.disabled) {
           cancel.focus();
