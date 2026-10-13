@@ -581,8 +581,21 @@
     e.stopPropagation();                            // core's viewport.onclick / document click (ui.js:2731) never run
     activateNode(node);
   }
+  // After a keyboard confirm, the autorepeat of that same key press is swallowed. Wherever focus
+  // lands next, Core binds Enter to "send" (composer) or to "Allow once" (approval card), and neither
+  // may act on a press the user aimed at our Send button. The next non-repeat press of that key is a
+  // new, deliberate press: it releases the latch and is handled normally.
+  var keyLatch = null;
   function onKeydown(e) {
     if (!e || !e.isTrusted) return;
+    if (keyLatch && e.key === keyLatch) {
+      if (e.repeat) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        return;
+      }
+      keyLatch = null;
+    }
     if (e.key === 'Escape') {
       // Only a preview that owns focus consumes Escape and hands focus back to its box; with focus
       // elsewhere (composer, Core's lightbox) the preview just closes and Core still sees the key.
@@ -691,6 +704,7 @@
       // "Allow once" shortcut. If the composer can't take focus, keep the preview open on Cancel and
       // let the send module explain the refusal.
       if (e.type === 'keydown') {
+        keyLatch = e.key;
         var composer = document.getElementById('msg');
         if (!composer || composer.disabled) {
           cancel.focus();

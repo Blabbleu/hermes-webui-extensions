@@ -521,3 +521,35 @@ test('maintainer review: a flipped toolbar is capped above the composer even whe
     assert.ok(parseInt(tb.style.top, 10) + 96 <= 500 - 8, 'toolbar bottom must stay above the composer');
   } finally { h.dom.window.close(); }
 });
+
+test('maintainer review: a keyboard confirm swallows that key\'s autorepeat; the next fresh press is normal', async () => {
+  const h = harness();
+  try {
+    const d = h.w.document;
+    const composerSaw = [];
+    const coreSaw = [];
+    h.msg.addEventListener('keydown', e => composerSaw.push(e.key + (e.repeat ? ':repeat' : '')));   // Core's composer Enter = send()
+    d.addEventListener('keydown', e => coreSaw.push(e.key + (e.repeat ? ':repeat' : '')));            // Core's document shortcuts
+    h.w.S.pendingFiles = ['staged.png'];                 // staged files: the send module refuses ('locked')
+    gesture(h, h.node);
+    sendButton(h).focus();
+    gesture(h, sendButton(h), 'keydown', { key: 'Enter' });
+    await wait(0);
+    assert.equal(h.calls.length, 0, 'refused: staged files are never sent');
+    assert.equal(d.activeElement, h.msg);
+    for (let i = 0; i < 3; i++) gesture(h, h.msg, 'keydown', { key: 'Enter', repeat: true });
+    assert.deepEqual(composerSaw.slice(), [], 'held Enter never reaches the composer');
+    assert.deepEqual(coreSaw.slice(), [], 'held Enter never reaches Core shortcuts');
+    gesture(h, h.msg, 'keydown', { key: 'Enter' });       // a fresh (non-repeat) press behaves normally
+    assert.deepEqual(composerSaw.slice(), ['Enter']);
+    // Same for Space.
+    h.w.S.pendingFiles = [];
+    gesture(h, h.node);
+    sendButton(h).focus();
+    gesture(h, sendButton(h), 'keydown', { key: ' ' });
+    await wait(0);
+    gesture(h, h.msg, 'keydown', { key: ' ' });
+    assert.deepEqual(composerSaw.slice(), ['Enter', ' '], 'a fresh press after a Space confirm is not swallowed');
+    await wait(60);
+  } finally { h.dom.window.close(); }
+});
