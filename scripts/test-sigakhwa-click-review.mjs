@@ -477,3 +477,47 @@ test('maintainer review: Enter/Space on our buttons never reach Core\'s approval
     assert.equal(h.calls.length, 0);
   } finally { h.dom.window.close(); }
 });
+
+test('maintainer review: keyboard Send hands focus to the composer; a locked composer keeps the preview on Cancel', async () => {
+  const h = harness();
+  try {
+    h.w.S.busy = true;                                   // the send will be refused as busy
+    gesture(h, h.node);
+    sendButton(h).focus();
+    gesture(h, sendButton(h), 'keydown', { key: 'Enter' });
+    await wait(0);
+    assert.equal(h.w.document.activeElement, h.msg, 'focus lands in the composer, never on <body>');
+    assert.equal(pop(h), null);
+    assert.equal(h.calls.length, 0);
+    h.w.S.busy = false;
+    h.msg.disabled = true;                               // composer locked (compression, edit)
+    gesture(h, h.node);
+    h.msg.value = '';
+    await wait(150);
+    sendButton(h).focus();
+    gesture(h, sendButton(h), 'keydown', { key: 'Enter' });
+    await wait(0);
+    assert.ok(pop(h), 'preview stays open when the composer cannot take focus');
+    assert.equal(h.w.document.activeElement.textContent, 'Cancel');
+    assert.equal(h.calls.length, 0);
+    gesture(h, pop(h).querySelector('button:not([data-sigakhwa-send])'));
+    await wait(60);
+  } finally { h.dom.window.close(); }
+});
+
+test('maintainer review: a flipped toolbar is capped above the composer even when the selection sits lower', () => {
+  const h = harness();
+  try {
+    const d = h.w.document;
+    Object.defineProperty(h.w, 'innerHeight', { value: 844, configurable: true });
+    Object.defineProperty(h.w, 'innerWidth', { value: 390, configurable: true });
+    const composer = d.createElement('div');
+    composer.id = 'composerWrap';
+    composer.getBoundingClientRect = () => ({ top: 500, bottom: 844, left: 0, right: 390, width: 390, height: 344 });
+    d.body.appendChild(composer);
+    const tb = d.createElement('div');
+    tb.getBoundingClientRect = () => ({ width: 374, height: 96 });
+    h.api.positionToolbar(tb, { top: 670, bottom: 690, left: 20, right: 300, width: 280, height: 20 });
+    assert.ok(parseInt(tb.style.top, 10) + 96 <= 500 - 8, 'toolbar bottom must stay above the composer');
+  } finally { h.dom.window.close(); }
+});

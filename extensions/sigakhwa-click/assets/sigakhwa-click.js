@@ -686,6 +686,19 @@
       if (e.type === 'keydown' && (document.activeElement !== sendBtn || (e.key !== 'Enter' && e.key !== ' '))) return;
       e.preventDefault();
       e.stopPropagation();
+      // A keyboard confirm removes the focused Send button. Hand focus to the composer first (where
+      // Core's own send leaves it): on <body>, a held or repeated Enter would reach Core's approval
+      // "Allow once" shortcut. If the composer can't take focus, keep the preview open on Cancel and
+      // let the send module explain the refusal.
+      if (e.type === 'keydown') {
+        var composer = document.getElementById('msg');
+        if (!composer || composer.disabled) {
+          cancel.focus();
+          mod.send({ text: prompt, source: 'click-node', bound: bound });   // refused (missing/locked) with its toast
+          return;
+        }
+        try { composer.focus({ preventScroll: true }); } catch (_) { try { composer.focus(); } catch (_e) {} }
+      }
       // The box may have been re-rendered or removed since the preview opened (the 100 ms watcher
       // below can lag a fast confirm); never send for a box that is no longer on screen.
       if (!node.isConnected) { closePopover(); return; }
@@ -817,7 +830,7 @@
     if (top + h > limit - gap) {
       var core = coreSelectionGroupRect();
       top = core ? Math.min(rect.top, core.top) - h - gap : rect.top - h - gap - CORE_GROUP_RESERVE;
-      top = Math.max(gap, top);
+      top = Math.max(gap, Math.min(top, limit - h - gap));   // never below the composer's top edge
     }
     el.style.left = Math.round(left) + 'px';
     el.style.top = Math.round(top) + 'px';
