@@ -1,0 +1,299 @@
+/* Project Folders extension — scoped styles.
+ * All selectors are prefixed with #pf-folders / .pf-* so they cannot leak
+ * into core UI. Design tokens come from the active WebUI skin via CSS vars.
+ */
+
+#pf-folders {
+  display: flex;
+  flex: 0 0 auto;
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0 8px 0;
+}
+body.pf-mode-folders #pf-folders { flex: 1 1 auto; min-height: 0; padding-bottom: 8px; }
+body.pf-mode-folders #sessionList { display: none !important; }
+body:not(.pf-mode-folders) #pf-folders .pf-scroll { display: none; }
+
+/* mode bar */
+.pf-modebar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 3px 6px 4px;
+  font-size: 11px;
+  color: var(--muted, #888);
+  user-select: none;
+}
+.pf-mode-seg { display: inline-flex; border: 1px solid var(--border2, #444); border-radius: 10px; overflow: hidden; }
+.pf-modebtn {
+  border: none;
+  background: transparent;
+  color: var(--muted, #888);
+  font-size: 11px;
+  padding: 3px 9px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.pf-modebtn:hover { color: var(--text, #ddd); background: var(--hover-bg, rgba(255,255,255,.06)); }
+body.pf-mode-folders .pf-modebtn:nth-child(1) { background: var(--accent-bg, rgba(80,120,255,.2)); color: var(--accent-text, var(--text, #ddd)); }
+body:not(.pf-mode-folders) .pf-modebtn:nth-child(2) { background: var(--accent-bg, rgba(80,120,255,.2)); color: var(--accent-text, var(--text, #ddd)); }
+
+/* scroll area */
+.pf-scroll { flex: 1; overflow-y: auto; min-height: 0; overscroll-behavior-y: contain; padding-bottom: 24px; }
+
+/* groups */
+.pf-group { margin-bottom: 4px; }
+.pf-group-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-radius: 8px;
+  cursor: pointer;
+  user-select: none;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text, #ddd);
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--bg, #111);
+}
+.pf-group-header:hover { background: var(--hover-bg, rgba(255,255,255,.05)); }
+.pf-group-header.pf-droptarget {
+  outline: 2px solid var(--accent, #4c8dff);
+  outline-offset: -2px;
+  background: var(--accent-bg, rgba(80,120,255,.12));
+}
+.pf-chevron { width: 12px; flex-shrink: 0; font-size: 10px; color: var(--muted, #888); }
+.pf-dot { width: 9px; height: 9px; border-radius: 50%; flex-shrink: 0; }
+.pf-group-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pf-count {
+  flex-shrink: 0;
+  font-size: 10px;
+  font-weight: 500;
+  color: var(--muted, #888);
+  background: var(--hover-bg, rgba(255,255,255,.06));
+  border-radius: 9px;
+  padding: 1px 7px;
+}
+.pf-group-actions { display: none; align-items: center; gap: 2px; flex-shrink: 0; }
+.pf-group-header:hover .pf-group-actions { display: inline-flex; }
+@media (pointer: coarse) {
+  .pf-group-actions { display: inline-flex; }
+  .pf-row-more { display: inline-block; }
+}
+.pf-icon-btn {
+  border: none;
+  background: transparent;
+  color: var(--muted, #888);
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  cursor: pointer;
+  font-size: 14px;
+  line-height: 1;
+  padding: 0;
+  font-family: inherit;
+}
+.pf-icon-btn:hover { background: var(--hover-bg, rgba(255,255,255,.08)); color: var(--text, #ddd); }
+
+/* group body + rows */
+.pf-group-body { padding: 0 0 4px 10px; }
+.pf-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 8px 5px 10px;
+  margin: 1px 0;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 12.5px;
+  color: var(--text2, var(--text, #ccc));
+  user-select: none;
+}
+.pf-row:hover { background: var(--hover-bg, rgba(255,255,255,.05)); color: var(--text, #ddd); }
+.pf-row.pf-dragging { opacity: .5; }
+.pf-row-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.pf-row-time {
+  flex-shrink: 0;
+  font-size: 10.5px;
+  color: var(--muted, #777);
+}
+.pf-row-more {
+  flex-shrink: 0;
+  display: none;
+  border: none;
+  background: transparent;
+  color: var(--muted, #888);
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  cursor: pointer;
+  padding: 0;
+  font-size: 14px;
+  line-height: 1;
+  font-family: inherit;
+}
+.pf-row:hover .pf-row-more { display: inline-block; }
+.pf-row-more:hover { background: var(--hover-bg, rgba(255,255,255,.08)); color: var(--text, #ddd); }
+.pf-dot-live, .pf-dot-att {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+.pf-dot-live { background: var(--accent, #4c8dff); animation: pf-pulse 1.2s ease-in-out infinite; }
+.pf-dot-att { background: var(--warning, #e6a23c); }
+@keyframes pf-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+
+.pf-row.pf-newchat { color: var(--muted, #888); border-style: dashed; border-width: 1px; border-color: var(--border2, #333); margin-top: 3px; }
+.pf-row.pf-newchat:hover { color: var(--accent, #4c8dff); border-color: var(--accent, #4c8dff); background: transparent; }
+.pf-newchat-label { font-size: 12px; }
+
+.pf-showmore, .pf-showless {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--muted, #888);
+  font-size: 11px;
+  padding: 6px 8px;
+  cursor: pointer;
+  text-align: center;
+  border-radius: 8px;
+  font-family: inherit;
+}
+.pf-showmore:hover, .pf-showless:hover { background: var(--hover-bg, rgba(255,255,255,.05)); color: var(--text, #ddd); }
+
+.pf-empty { padding: 24px 12px; text-align: center; color: var(--muted, #888); font-size: 12px; }
+.pf-empty-hint { margin-top: 8px; font-size: 11px; }
+.pf-incompat-back { margin-top: 12px; }
+
+/* menu */
+.pf-menu {
+  position: fixed;
+  min-width: 200px;
+  max-width: 320px;
+  max-height: 70vh;
+  overflow-y: auto;
+  background: var(--surface2, var(--surface, #1c1e26));
+  border: 1px solid var(--border2, #3a3d46);
+  border-radius: 10px;
+  box-shadow: 0 8px 28px rgba(0,0,0,.45);
+  padding: 4px;
+  font-size: 12.5px;
+}
+.pf-menu-item {
+  display: block;
+  width: 100%;
+  border: none;
+  background: transparent;
+  color: var(--text, #ddd);
+  text-align: left;
+  padding: 7px 10px;
+  border-radius: 7px;
+  cursor: pointer;
+  font-family: inherit;
+  font-size: 12.5px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pf-menu-item:hover:not(:disabled) { background: var(--hover-bg, rgba(255,255,255,.07)); }
+.pf-menu-item:disabled { color: var(--muted, #777); opacity: .6; cursor: default; }
+.pf-menu-danger { color: var(--danger, #e05252); }
+.pf-menu-danger:hover:not(:disabled) { background: rgba(224,82,82,.12); }
+.pf-menu-sep { height: 1px; background: var(--border2, #3a3d46); margin: 4px 6px; }
+.pf-menu-label {
+  padding: 7px 10px 3px;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: .04em;
+  color: var(--muted, #888);
+  opacity: .8;
+}
+
+/* dialogs */
+.pf-overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0,0,0,.55);
+  z-index: 100001;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+.pf-dialog {
+  background: var(--surface, #1c1e26);
+  border: 1px solid var(--border2, #3a3d46);
+  border-radius: 12px;
+  box-shadow: 0 16px 48px rgba(0,0,0,.5);
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  max-height: 85vh;
+}
+.pf-dialog-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 12px 16px 8px;
+}
+.pf-dialog-title { font-size: 13.5px; font-weight: 600; color: var(--text, #eee); }
+.pf-dialog-x {
+  border: none; background: transparent; color: var(--muted, #888);
+  font-size: 18px; cursor: pointer; line-height: 1; padding: 2px 6px; border-radius: 6px;
+}
+.pf-dialog-x:hover { background: var(--hover-bg, rgba(255,255,255,.07)); color: var(--text, #eee); }
+.pf-dialog-body { padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 10px; overflow-y: auto; }
+.pf-dialog-text { font-size: 12px; color: var(--muted, #999); line-height: 1.45; }
+.pf-input, .pf-textarea {
+  width: 100%;
+  box-sizing: border-box;
+  background: var(--input-bg, #14151b);
+  border: 1px solid var(--border2, #3a3d46);
+  border-radius: 8px;
+  color: var(--text, #ddd);
+  font-size: 12.5px;
+  padding: 8px 10px;
+  font-family: inherit;
+  outline: none;
+}
+.pf-input:focus, .pf-textarea:focus { border-color: var(--accent, #4c8dff); }
+.pf-textarea {
+  min-height: 340px;
+  resize: vertical;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.5;
+  white-space: pre;
+}
+.pf-dialog-err { font-size: 11.5px; color: var(--danger, #e05252); min-height: 14px; }
+.pf-dialog-actions { display: flex; justify-content: flex-end; gap: 8px; }
+.pf-btn {
+  border: 1px solid var(--border2, #3a3d46);
+  background: var(--input-bg, #14151b);
+  color: var(--text, #ddd);
+  font-size: 12.5px;
+  padding: 7px 14px;
+  border-radius: 8px;
+  cursor: pointer;
+  font-family: inherit;
+}
+.pf-btn:hover { background: var(--hover-bg, rgba(255,255,255,.07)); }
+.pf-btn-primary { background: var(--accent, #4c8dff); border-color: var(--accent, #4c8dff); color: #fff; }
+.pf-btn-primary:hover { filter: brightness(1.1); }
+.pf-btn-danger { color: var(--danger, #e05252); border-color: var(--danger, #e05252); background: transparent; }
+.pf-btn-danger:hover { background: rgba(224,82,82,.12); }

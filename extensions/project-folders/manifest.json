@@ -1,0 +1,21 @@
+{
+  "extensions": [
+    {
+      "id": "project-folders",
+      "name": "Project Folders",
+      "description": "Collapsible project folders for the chat sidebar, per-project workspaces with HERMES.md editing, and regenerate-title-from-context via a local OpenAI-compatible LLM endpoint.",
+      "scripts": [
+        "assets/project-folders.js"
+      ],
+      "stylesheets": [
+        "assets/project-folders.css"
+      ],
+      "sidecar": {
+        "type": "loopback",
+        "origin": "http://127.0.0.1:17872",
+        "health_path": "/health",
+        "proxy_auth": "token-v1"
+      }
+    }
+  ]
+}

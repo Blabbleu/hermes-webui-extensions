@@ -1,0 +1,89 @@
+{
+  "id": "project-folders",
+  "name": "Project Folders",
+  "description": "Collapsible project folders for the chat sidebar, per-project workspaces with HERMES.md editing, and regenerate-title-from-context via a local OpenAI-compatible LLM endpoint, backed by a token-v1 loopback sidecar.",
+  "version": "1.2.0",
+  "author": "motolight",
+  "assets": {
+    "scripts": [
+      "assets/project-folders.js"
+    ],
+    "stylesheets": [
+      "assets/project-folders.css"
+    ]
+  },
+  "capabilities": [
+    "manifest-bundle",
+    "loopback-sidecar"
+  ],
+  "sidecar": {
+    "type": "loopback",
+    "origin": "http://127.0.0.1:17872",
+    "health_path": "/health",
+    "proxy_auth": "token-v1",
+    "runtime": {
+      "kind": "vendored",
+      "path": "sidecar"
+    }
+  },
+  "lifecycle": {
+    "webui_restart_required": false,
+    "sidecar_start_required": true,
+    "native_host_start_required": false,
+    "native_host_autostart": "none"
+  },
+  "post_install": {
+    "summary": "Install enables the folder sidebar. Start the bundled sidecar (systemd user unit project-folders-sidecar), approve the sidecar proxy in Settings → Extensions, and optionally configure the title-regeneration endpoint via a systemd drop-in.",
+    "docs_url": "https://github.com/hermes-webui/hermes-webui-extensions/tree/main/extensions/project-folders#readme",
+    "requires_local_app": true,
+    "local_app_label": "Project Folders sidecar"
+  },
+  "screenshots": [
+    "screenshots/folders-sidebar.png",
+    "screenshots/hermes-md-dialog.png"
+  ],
+  "permissions": {
+    "webui_api": {
+      "read": [
+        "sessions",
+        "session",
+        "/api/projects",
+        "/api/extensions/project-folders/sidecar/v1/state",
+        "/api/extensions/project-folders/sidecar/v1/hermes-md",
+        "/api/extensions/project-folders/sidecar/v1/template"
+      ],
+      "write": [
+        "/api/session/new",
+        "/api/session/move",
+        "/api/session/update",
+        "/api/session/rename",
+        "/api/session/archive",
+        "/api/session/delete",
+        "/api/projects/rename",
+        "/api/projects/delete",
+        "/api/extensions/project-folders/sidecar/v1/bindings",
+        "/api/extensions/project-folders/sidecar/v1/hermes-md",
+        "/api/extensions/project-folders/sidecar/v1/generate-title"
+      ]
+    },
+    "webui_navigation": true,
+    "dom": {
+      "owned": true,
+      "mutates_core_views": true
+    },
+    "storage": {
+      "owned": [
+        "hermes-pf-mode",
+        "hermes-pf-collapse"
+      ],
+      "shared_webui_keys": []
+    },
+    "loopback_sidecar": true,
+    "native_host": false,
+    "filesystem": {
+      "arbitrary": true,
+      "serves_bundled_assets": false
+    },
+    "network_external": true
+  }
+}

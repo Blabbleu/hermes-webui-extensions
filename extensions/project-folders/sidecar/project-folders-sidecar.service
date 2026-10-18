@@ -1,0 +1,27 @@
+# Project Folders sidecar — token-v1 loopback backend for the project-folders
+# WebUI extension. Stdlib-only: needs just python3, which is why it runs under
+# `-S`. WebUI provisions the proxy token in the state dir; the scaffold
+# resolves it. No token in this unit.
+# Install: cp to ~/.config/systemd/user/ then
+#   `systemctl --user enable --now project-folders-sidecar`
+[Unit]
+Description=Project Folders sidecar (loopback backend for the project-folders WebUI extension, token-v1)
+After=default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.hermes/webui/extensions/project-folders/sidecar
+Environment=HERMES_WEBUI_STATE_DIR=%h/.hermes/webui
+ExecStart=/usr/bin/python3 -S -u sidecar.py
+# To point title regeneration at a specific OpenAI-compatible endpoint or model,
+# use a user drop-in (this canonical unit intentionally carries no secrets):
+#   systemctl --user edit project-folders-sidecar
+# and add e.g.
+#   [Service]
+#   Environment=PF_LLM_BASE_URL=http://127.0.0.1:8000/v1
+#   Environment=PF_LLM_MODEL=<model-id>
+#   Environment=PF_LLM_TIMEOUT_S=8
+Restart=on-failure
+
+[Install]
+WantedBy=default.target
