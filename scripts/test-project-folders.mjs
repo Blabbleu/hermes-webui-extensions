@@ -175,6 +175,9 @@ async function main() {
     const head = h.d.querySelector('#panelChat .panel-head-actions');
     check(head.querySelector('#pf-mode-toggle'), 'mode toggle injected into panel-head-actions');
     check(head.querySelector('#pf-mode-toggle') === head.firstChild, 'toggle sits beside the core "+" button');
+    const tog = head.querySelector('#pf-mode-toggle');
+    check(tog.classList.contains('has-tooltip') && tog.getAttribute('data-tooltip'), 'toggle uses core\'s tooltip idiom (data-tooltip), like the adjacent "+"');
+    check(!tog.hasAttribute('title'), 'no native title tooltip doubling core\'s styled one');
     h.close();
   }
 
@@ -444,7 +447,7 @@ async function main() {
     const h = makeHarness({ projects, sessions, coreMenu: true });
     await boot(h);
     h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-gear').click();
-    const md = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md'));
+    const md = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Project instructions'));
     check(md && !md.disabled, 'HERMES.md enabled when a session in the bound workspace exists');
     md.onclick({});
     await tick(30);
@@ -470,7 +473,7 @@ async function main() {
     h.mdMissing = true;
     await boot(h);
     h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-gear').click();
-    const md = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md'));
+    const md = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Project instructions'));
     md.onclick({});
     await tick(30);
     const ta = h.d.querySelector('.pf-dialog .pf-textarea');
@@ -488,7 +491,7 @@ async function main() {
     const h = makeHarness({ projects, sessions, coreMenu: true });
     await boot(h);
     h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-gear').click();
-    const md = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md'));
+    const md = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Project instructions'));
     check(!md.disabled, 'HERMES.md stays enabled (a disabled reason would be tooltip-only on touch)');
     md.onclick({});
     await tick(10);
@@ -610,7 +613,7 @@ async function main() {
     h.holdFile = new Promise((r) => { release = r; });
     const gear = h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-gear');
     gear.click();
-    [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md')).onclick({});
+    [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Project instructions')).onclick({});
     await tick(5);
     const dlg = h.d.querySelector('.pf-dialog');
     check(dlg && dlg.contains(h.w.document.activeElement), 'while loading, focus is on an enabled control inside the dialog');
@@ -632,7 +635,7 @@ async function main() {
     h.mdRefused = true;
     await boot(h);
     h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-gear').click();
-    [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md')).onclick({});
+    [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Project instructions')).onclick({});
     await tick(30);
     const txt = h.d.querySelector('.pf-dialog .pf-dialog-text').textContent;
     check(/Path traversal blocked/.test(txt) && !/No HERMES\.md/.test(txt), 'core refusals are not mislabeled as "no file yet"');
@@ -649,7 +652,7 @@ async function main() {
     await boot(h);
     const openMd = async (pid) => {
       h.d.querySelector(`#pf-folders .pf-group[data-key="${pid}"] .pf-group-gear`).click();
-      [...h.mountedMenus[h.mountedMenus.length - 1].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md')).onclick({});
+      [...h.mountedMenus[h.mountedMenus.length - 1].querySelectorAll('button')].find((b) => b.textContent.includes('Project instructions')).onclick({});
       await tick(20);
       return h.d.querySelector('.pf-dialog');
     };

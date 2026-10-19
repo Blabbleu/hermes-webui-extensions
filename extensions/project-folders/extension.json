@@ -41,7 +41,18 @@
         "session",
         "/api/projects",
         "/api/file",
-        "/api/list"
+        "/api/list",
+        "/api/git-info",
+        "/api/reasoning",
+        "/api/models",
+        "/api/models/live",
+        "/api/workspaces",
+        "/api/settings",
+        "/api/approval/pending",
+        "/api/clarify/pending",
+        "/api/provider/quota",
+        "/api/chat/stream",
+        "/api/chat/stream/status"
       ],
       "write": [
         "/api/session/new",
@@ -57,7 +68,8 @@
         "/api/file/save",
         "/api/session/import_cli",
         "/api/profile/switch",
-        "/api/session/draft"
+        "/api/session/draft",
+        "/api/client-events/log"
       ]
     },
     "webui_navigation": true,
@@ -83,7 +95,14 @@
         "handoff:*",
         "hermes-webui-model",
         "hermes-webui-model-state",
-        "hermes-webui-inflight-state"
+        "hermes-webui-inflight-state",
+        "hermes-session-profile-counts",
+        "hermes-webui-hidden-tabs",
+        "hermes-webui-tab-order",
+        "hermes-webui-composer-control-order",
+        "hermes-webui-inflight",
+        "hermes-webui-explicit-picker-pick:*",
+        "hermes-webui-pending-session-model:*"
       ]
     },
     "loopback_sidecar": false,

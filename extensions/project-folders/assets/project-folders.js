@@ -457,7 +457,8 @@
       btn = document.createElement('button');
       btn.id = 'pf-mode-toggle';
       btn.type = 'button';
-      btn.className = 'panel-icon-btn pf-toggle';
+      // core's tooltip idiom, same as the adjacent "+" (#btnNewChat)
+      btn.className = 'panel-icon-btn pf-toggle has-tooltip has-tooltip--bottom-right';
       // static markup, no user data
       btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
         + '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
@@ -471,7 +472,8 @@
     const label = on ? L('pf_folders_mode_on', 'Project folders: on')
       : L('pf_folders_mode_off', 'Project folders: off');
     btn.setAttribute('aria-label', label);
-    btn.title = label;
+    btn.setAttribute('data-tooltip', label);
+    btn.removeAttribute('title');
     btn.classList.toggle('pf-on', on);
   }
 
@@ -1603,7 +1605,7 @@
     // Kept enabled: a disabled item's reason would live only in a tooltip that
     // touch users never see. The action itself explains what is missing.
     items.push({
-      label: L('pf_hermes_md', 'Project instructions (HERMES.md)…'),
+      label: L('pf_hermes_md', 'Project instructions…'),
       meta: bindings.workspace
         ? (hermesMdSession(project) ? bindings.workspace + '/HERMES.md' : L('pf_hermes_md_no_session', 'Open or create a chat in the project workspace first.'))
         : L('pf_hermes_md_no_workspace', 'Set a workspace for this project first.'),
@@ -1767,7 +1769,7 @@
     const dlg = el('div', 'pf-dialog');
     dlg.setAttribute('role', 'dialog');
     dlg.setAttribute('aria-modal', 'true');
-    dlg.setAttribute('aria-label', L('pf_hermes_md', 'Project instructions (HERMES.md)…'));
+    dlg.setAttribute('aria-label', L('pf_hermes_md', 'Project instructions…'));
     const head = el('div', 'pf-dialog-head');
     head.appendChild(el('div', 'pf-dialog-title', 'HERMES.md — ' + project.name));
     const x = el('button', 'pf-dialog-x', '×');

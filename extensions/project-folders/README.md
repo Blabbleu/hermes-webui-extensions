@@ -118,19 +118,26 @@ Folders mode replaces only the **list**; the classic sidebar keeps owning:
   leaves core projects and their bindings intact.
 - Cosmetic state (`hermes-pf-mode`, `hermes-pf-collapse`) lives in browser
   localStorage under extension-owned keys.
-- **Core side effects, declared.** Opening, creating and deleting chats and
-  switching a chat's workspace run through core's own helpers, so core's
-  normal side effects happen on the extension's behalf: `POST
-  /api/session/import_cli` (opening a CLI session), `POST /api/profile/switch`
-  (opening another profile's chat while all-profiles is on), `POST
-  /api/session/draft` (core saves the outgoing chat's composer draft when you
-  switch), `GET /api/list` (file-tree refresh after a workspace switch), and
-  core's own localStorage keys: the open-session pointer, new-chat draft,
-  viewed and completion-unread state, observed-streaming state, per-session
-  queue (`hermes-queue-*`) and handoff (`handoff:*`) entries that core's
-  delete clears, and core's model/in-flight state. These are listed in
-  `extension.json` (`webui_api`, `storage.shared_webui_keys`; `*` marks a key
-  family).
+- **Core side effects, declared.** Opening, creating and deleting chats,
+  switching a chat's workspace, and opening another profile's chat all run
+  through core's own helpers (`_openSidebarSession`/`loadSession`,
+  `newSession`, `deleteSession`, `switchToWorkspace`, profile switch). The
+  extension adds no behavior of its own there, but core's normal side
+  effects then happen on its behalf, so they are listed in `extension.json`:
+  - writes: `/api/session/import_cli` (opening a CLI session),
+    `/api/profile/switch` (another profile's chat with all-profiles on),
+    `/api/session/draft` (core saves the outgoing chat's composer draft), and
+    `/api/client-events/log` (core logs a stream error if one occurs);
+  - reads core performs while loading a chat: models and reasoning options,
+    settings, workspaces and the file tree (`/api/list`), git info, pending
+    approvals/clarifications, provider quota, and stream status/stream;
+  - core's localStorage keys: the open-session pointer, new-chat draft,
+    viewed/unread and observed-streaming state, profile counts, per-session
+    queue (`hermes-queue-*`) and handoff (`handoff:*`) entries that core's
+    delete clears, tab and composer-control order, and model / in-flight
+    state; plus two sessionStorage families core clears on navigation
+    (`hermes-webui-explicit-picker-pick:*`,
+    `hermes-webui-pending-session-model:*`). `*` marks a key family.
 - Labels route through core's `t()` i18n with English fallbacks.
 
 ## Install / disable / uninstall
