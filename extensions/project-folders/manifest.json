@@ -1,0 +1,15 @@
+{
+  "extensions": [
+    {
+      "id": "project-folders",
+      "name": "Project Folders",
+      "description": "Collapsible project folders for the chat sidebar. Client-side only: core project bindings, core session-open/new-session paths, core title regeneration, core file API.",
+      "scripts": [
+        "assets/project-folders.js"
+      ],
+      "stylesheets": [
+        "assets/project-folders.css"
+      ]
+    }
+  ]
+}

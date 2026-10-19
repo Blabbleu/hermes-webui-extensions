@@ -10,6 +10,7 @@
     {"path": "scripts/test-opencode-hover-click.mjs", "runner": "node"},
     {"path": "scripts/test-opencode-redirect.py", "runner": "python"},
     {"path": "scripts/test-profile-avatars.py", "runner": "python"},
+    {"path": "scripts/test-project-folders.mjs", "runner": "node"},
     {"path": "scripts/test-sidecar-contract.mjs", "runner": "node"},
     {"path": "scripts/test-sidecar-scaffold.py", "runner": "python"},
     {"path": "scripts/test-sigakhwa-click-parser.mjs", "runner": "node-test"},
