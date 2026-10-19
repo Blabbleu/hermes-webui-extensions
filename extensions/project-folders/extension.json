@@ -1,9 +1,10 @@
 {
   "id": "project-folders",
   "name": "Project Folders",
-  "description": "Collapsible project folders for the chat sidebar, per-project workspaces with HERMES.md editing, and regenerate-title-from-context via a local OpenAI-compatible LLM endpoint, backed by a token-v1 loopback sidecar.",
-  "version": "1.2.0",
+  "description": "Collapsible project folders for the chat sidebar. Client-side only: reads/writes core project bindings (/api/projects, /api/projects/bind), opens chats and creates sessions through core's own sidebar/new-session paths, regenerates titles via core, and edits HERMES.md via core's file API.",
+  "version": "2.0.0",
   "author": "motolight",
+  "min_webui_version": "0.52.515",
   "assets": {
     "scripts": [
       "assets/project-folders.js"
@@ -13,33 +14,24 @@
     ]
   },
   "capabilities": [
-    "manifest-bundle",
-    "loopback-sidecar"
+    "manifest-bundle"
   ],
-  "sidecar": {
-    "type": "loopback",
-    "origin": "http://127.0.0.1:17872",
-    "health_path": "/health",
-    "proxy_auth": "token-v1",
-    "runtime": {
-      "kind": "vendored",
-      "path": "sidecar"
-    }
-  },
   "lifecycle": {
     "webui_restart_required": false,
-    "sidecar_start_required": true,
+    "sidecar_start_required": false,
     "native_host_start_required": false,
     "native_host_autostart": "none"
   },
   "post_install": {
-    "summary": "Install enables the folder sidebar. Start the bundled sidecar (systemd user unit project-folders-sidecar), approve the sidecar proxy in Settings → Extensions, and optionally configure the title-regeneration endpoint via a systemd drop-in.",
+    "summary": "Install enables the folder sidebar. Toggle it with the folder icon in the Chat panel header. Project workspaces are core's own project bindings — shared with core's project quick-create, no sidecar or extra setup needed.",
     "docs_url": "https://github.com/hermes-webui/hermes-webui-extensions/tree/main/extensions/project-folders#readme",
-    "requires_local_app": true,
-    "local_app_label": "Project Folders sidecar"
+    "requires_local_app": false
   },
   "screenshots": [
     "screenshots/folders-sidebar.png",
+    "screenshots/folders-sidebar-light.png",
+    "screenshots/mobile-drawer.png",
+    "screenshots/row-menu.png",
     "screenshots/hermes-md-dialog.png"
   ],
   "permissions": {
@@ -48,9 +40,7 @@
         "sessions",
         "session",
         "/api/projects",
-        "/api/extensions/project-folders/sidecar/v1/state",
-        "/api/extensions/project-folders/sidecar/v1/hermes-md",
-        "/api/extensions/project-folders/sidecar/v1/template"
+        "/api/file"
       ],
       "write": [
         "/api/session/new",
@@ -59,11 +49,11 @@
         "/api/session/rename",
         "/api/session/archive",
         "/api/session/delete",
+        "/api/session/title/regenerate",
+        "/api/projects/bind",
         "/api/projects/rename",
         "/api/projects/delete",
-        "/api/extensions/project-folders/sidecar/v1/bindings",
-        "/api/extensions/project-folders/sidecar/v1/hermes-md",
-        "/api/extensions/project-folders/sidecar/v1/generate-title"
+        "/api/file/save"
       ]
     },
     "webui_navigation": true,
@@ -78,12 +68,12 @@
       ],
       "shared_webui_keys": []
     },
-    "loopback_sidecar": true,
+    "loopback_sidecar": false,
     "native_host": false,
     "filesystem": {
-      "arbitrary": true,
-      "serves_bundled_assets": false
+      "arbitrary": false,
+      "serves_bundled_assets": true
     },
-    "network_external": true
+    "network_external": false
   }
 }

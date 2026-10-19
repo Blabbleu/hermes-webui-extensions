@@ -1,20 +1,26 @@
-/* Hermes WebUI extension: Project Folders
+/* Hermes WebUI extension: Project Folders (lite)
  *
- * Turns the existing Projects (project_id on sessions) into a collapsible
- * folder sidebar with per-project "new chat" and project context
- * (workspace + HERMES.md) management.
+ * Groups the chat sidebar into collapsible project folders on top of core's
+ * own project model. This is a client-side-only extension: it ships no
+ * sidecar, opens no new event stream, and stores nothing outside browser
+ * storage. Every server-side behavior goes through stock core WebUI APIs:
  *
- * Design constraints:
- *  - additive DOM only: one container (#pf-folders) inside #panelChat; core
- *    session list is hidden via CSS class, never mutated;
- *  - core globals are used where available (loadSession/newSession/showToast)
- *    and feature-checked; missing core hooks degrade to URL navigation;
- *  - all data comes from the stock WebUI APIs (/api/projects, /api/sessions,
- *    /api/session/new|move|update|rename|archive|delete, /api/projects/*);
- *  - project->workspace binding + HERMES.md live on the extension sidecar
- *    (server-side, token-validated); cosmetic state lives in browser storage;
- *  - failures never break the WebUI: everything is guarded, and an
- *    incompatibility flips the extension into passive mode.
+ *   - project list + workspace/model bindings:  GET /api/projects,
+ *     POST /api/projects/bind (bindings are CORE state, not extension state);
+ *   - new chat in a project: core newSession(true, {project_id, ...bindings})
+ *     (core skips its own binding merge when project_id is passed explicitly,
+ *     so we read the project's bindings and forward them ourselves);
+ *   - open a chat: core _openSidebarSession() so the mobile drawer closes and
+ *     session-open hooks run;
+ *   - regenerate title: POST /api/session/title/regenerate;
+ *   - HERMES.md: GET /api/file + POST /api/file/save against a session in the
+ *     project workspace (core enforces path safety and preserves modes);
+ *   - move/rename/archive/delete: core session APIs.
+ *
+ * Sidebar refresh piggybacks on core's own refresh pipeline (window.
+ * refreshSessionList wrapper) plus a visibility-aware poll; we never open a
+ * second EventSource. Repaints are skipped when the snapshot hash is
+ * unchanged; rows are reconciled by session_id and focus is restored.
  */
 (() => {
   'use strict';
@@ -22,40 +28,142 @@
   window.__PF_INJECTED__ = true;
 
   const EXT_ID = 'project-folders';
-  const PAGE_SIZE = 5; // rows shown per expanded group before "Show more"
+  const PAGE_SIZE = 5; // rows per expanded group before "Show more"
+  const POLL_MS = 30000;
   const LS = {
     mode: 'hermes-pf-mode',
     collapse: 'hermes-pf-collapse',
   };
   const DND_MIME = 'application/x-hermes-pf';
 
+  /* ── core accessors (all feature-checked) ───────────────────────────── */
+
+  // Core loads as classic deferred scripts before extension scripts, so
+  // top-level functions are on window and top-level consts are reachable as
+  // bare lexical names. Every access is guarded: missing hooks degrade.
+  function coreFn(name) {
+    try {
+      const f = window[name];
+      return typeof f === 'function' ? f : null;
+    } catch (_) { return null; }
+  }
+  function coreT(key) {
+    // core i18n: t() is a top-level function; returns the key literally when
+    // missing, which we treat as "no label".
+    try {
+      /* eslint-disable-next-line no-undef */
+      if (typeof t !== 'function') return null;
+      /* eslint-disable-next-line no-undef */
+      const v = t(key);
+      return (typeof v === 'string' && v && v !== key) ? v : null;
+    } catch (_) { return null; }
+  }
+  function coreS() {
+    try {
+      /* eslint-disable-next-line no-uniq */
+      return (typeof S !== 'undefined' && S) ? S : null;
+    } catch (_) { return null; }
+  }
+  function coreConst(name, probe) {
+    // read-only access to lexical core consts (ICONS/LOCALES) without eval
+    try { return probe(); } catch (_) { return null; }
+  }
+
+  // i18n: route every label through core's t(); pf_* keys are seeded into
+  // core's locale catalog at boot (core's t() reads LOCALES.en as fallback),
+  // and every call carries an English literal as last-resort fallback.
+  const PF_KEYS = {
+    pf_unassigned: 'Unassigned',
+    pf_new_chat_here: 'New chat here',
+    pf_new_chat_in: 'New chat in {0}',
+    pf_new_chat_unassigned: 'New unassigned chat',
+    pf_folders_mode_on: 'Project folders: on',
+    pf_folders_mode_off: 'Project folders: off',
+    pf_show_more: 'Show {0} more · {1} remaining',
+    pf_show_less: 'Show less',
+    pf_set_workspace: 'Set workspace…',
+    pf_change_workspace: 'Change workspace…',
+    pf_unbind_workspace: 'Unbind workspace',
+    pf_hermes_md: 'Project instructions (HERMES.md)…',
+    pf_project_rename: 'Rename project…',
+    pf_project_delete: 'Delete project…',
+    pf_no_project_filter: 'No project (Unassigned)',
+    pf_use_project_workspace: 'Use project workspace',
+    pf_read_only_session: 'Read-only session (imported)',
+    pf_no_projects_hint: 'No conversations yet. Create a project or start a chat.',
+    pf_conversation_actions: 'Conversation actions',
+    pf_project_actions: 'Project actions',
+    pf_title_regenerated: 'Title updated',
+    pf_title_regenerating: 'Regenerating title…',
+    pf_untitled: 'Untitled',
+    pf_hermes_md_missing: 'No HERMES.md exists in this workspace yet. Core\'s file API only edits existing files — create the file in the workspace first (for example via a project chat), then reopen this dialog.',
+    pf_hermes_md_no_session: 'Open or create a chat in the project workspace first — core\'s file API works through a session in that workspace.',
+    pf_empty_group: 'No chats in this project yet.',
+    pf_moved_to_project: 'Moved to project',
+    pf_removed_from_project: 'Removed from project',
+    pf_archived_note: 'Archived — archived chats live in the classic sidebar (turn folders off to see them)',
+    pf_workspace_unbound: 'Workspace unbound',
+    pf_workspace_bound: 'Workspace bound',
+    pf_bind_failed: 'Workspace bind failed',
+    pf_cannot_undo: 'This cannot be undone.',
+    pf_failed_to_load: 'Failed to load',
+    pf_new_chat_failed: 'New chat failed',
+    pf_move_failed: 'Move failed',
+    pf_rename_failed: 'Rename failed',
+    pf_delete_failed: 'Delete failed',
+    pf_regenerate_failed: 'Regenerate title failed',
+    pf_workspace_update_failed: 'Workspace update failed',
+  };
+  (function seedLocaleKeys() {
+    coreConst('LOCALES', () => {
+      /* eslint-disable-next-line no-undef */
+      if (typeof LOCALES === 'object' && LOCALES && LOCALES.en) {
+        /* eslint-disable-next-line no-undef */
+        for (const k of Object.keys(PF_KEYS)) {
+          /* eslint-disable-next-line no-undef */
+          if (!(k in LOCALES.en)) LOCALES.en[k] = PF_KEYS[k];
+        }
+      }
+      return true;
+    });
+  })();
+  function L(key, fallback) {
+    return coreT(key) || fallback;
+  }
+  function Lf(key, fallback, ...args) {
+    const raw = coreT(key) || fallback;
+    try {
+      return raw.replace(/\{(\d)\}/g, (_, i) => String(args[Number(i)]));
+    } catch (_) { return fallback; }
+  }
+
+  /* ── state ───────────────────────────────────────────────────────────── */
+
   const state = {
     ready: false,
-    compatible: false,
+    compatible: true,
     compatReason: '',
     mode: 'folders',
     projects: [],
     sessions: [],
-    bindings: {},
-    defaultWorkspace: '',
     collapsed: {},
-    visibleCounts: {}, // per-group pagination window (display-only, not persisted)
+    visibleCounts: {}, // per-group pagination window (display-only)
     search: '',
-    profile: 'default',
     lastHash: '',
-    sidecarOk: null, // null = unknown, true/false
+    titleBusy: {}, // session_id -> true while regenerating
   };
 
   let pfRoot = null;
   let scrollEl = null;
-  let refreshTimer = 0;
+  let debounceTimer = 0;
   let refreshInFlight = false;
+  let pendingFollowup = false;
   let pollTimer = 0;
   let timeTimer = 0;
-  let activeTimer = 0;
-  let lastActiveSid = null;
-  let sse = null;
-  let lastProfile = '';
+  let menuSeq = 0;
+  let pendingSince = 0; // first-request timestamp of the current debounce window
+  let lastFocusKey = null;
+  const groupDom = new Map(); // group key -> {groupEl, bodyEl, header:els, rows:Map}
 
   /* ── tiny utilities ─────────────────────────────────────────────────── */
 
@@ -84,7 +192,6 @@
     if (text !== undefined) n.textContent = text;
     return n;
   }
-  function esc(s) { return String(s == null ? '' : s); }
 
   function relTime(ts) {
     if (!ts) return '';
@@ -108,49 +215,23 @@
   }
 
   function toast(msg, ms) {
-    try { if (typeof window.showToast === 'function') { window.showToast(msg, ms); return; } } catch (_) {}
-    console.warn('[project-folders]', msg);
-  }
-
-  function activeProfile() {
     try {
-      const p = (typeof S !== 'undefined' && S && S.activeProfile) ? S.activeProfile : null;
-      return p || 'default';
-    } catch (_) { return 'default'; }
-  }
-
-  /* ── storage handle (extension-owned settings, with fallback) ───────── */
-
-  let extHandle = null;
-  function initStorage() {
-    try {
-      const h = window.hermesExt && typeof window.hermesExt.register === 'function'
-        ? window.hermesExt.register(EXT_ID) : null;
-      if (h) extHandle = h;
+      const f = coreFn('showToast');
+      if (f) { f(msg, ms || 4000); return; }
     } catch (_) {}
-    // mode: prefer extension settings, fall back to localStorage
-    let mode = 'folders';
-    try {
-      if (extHandle && extHandle.settings && typeof extHandle.settings.get === 'function') {
-        const v = extHandle.settings.get('mode');
-        if (v === 'classic' || v === 'folders') mode = v;
-      }
-    } catch (_) {}
-    if (mode === 'folders') mode = lsGet(LS.mode, 'folders') === 'classic' ? 'classic' : 'folders';
-    state.mode = mode === 'classic' ? 'classic' : 'folders';
-  }
-  function setMode(mode) {
-    state.mode = mode === 'classic' ? 'classic' : 'folders';
-    lsSet(LS.mode, state.mode);
-    try {
-      if (extHandle && extHandle.settings && typeof extHandle.settings.set === 'function') {
-        extHandle.settings.set('mode', state.mode);
-      }
-    } catch (_) {}
-    applyMode();
+    console.warn('[' + EXT_ID + ']', msg);
   }
 
-  /* ── API ────────────────────────────────────────────────────────────── */
+  function activeSid() {
+    const s = coreS();
+    try { return (s && s.session && s.session.session_id) || null; } catch (_) { return null; }
+  }
+
+  function isReadOnlySession(s) {
+    return !!(s && (s.read_only || s.is_read_only));
+  }
+
+  /* ── API helpers (same-origin, stock core endpoints only) ───────────── */
 
   async function pfFetch(path, opts) {
     const o = Object.assign({ credentials: 'same-origin' }, opts || {});
@@ -164,75 +245,72 @@
     }
     return r.json();
   }
-  const pfApiGet = (path) => pfFetch(path, { method: 'GET' });
-  const pfApiPost = (path, body) => pfFetch(path, {
+  const apiGet = (path) => pfFetch(path, { method: 'GET' });
+  const apiPost = (path, body) => pfFetch(path, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body || {}),
   });
 
-  /* ── sidecar ────────────────────────────────────────────────────────── */
-
-  let sidecarNoticeShown = false;
-  function sidecarUnavailableNotice(status) {
-    state.sidecarOk = false;
-    if (sidecarNoticeShown) return;
-    sidecarNoticeShown = true;
-    const hint = status === 403
-      ? 'Project Folders: workspace features are paused — enable WebUI authentication (Settings → Security) to use project workspaces.'
-      : 'Project Folders: sidecar is unavailable right now — workspace features are paused.';
-    toast(hint, 8000);
-  }
-  async function sidecar(path, opts) {
-    const o = Object.assign({ credentials: 'same-origin' }, opts || {});
-    const r = await fetch('/api/extensions/' + EXT_ID + '/sidecar' + path, o);
-    if (!r.ok) {
-      let msg = 'sidecar HTTP ' + r.status;
-      try { const j = await r.json(); if (j && j.error) msg = j.error; } catch (_) {}
-      if (r.status === 403 || r.status === 503) sidecarUnavailableNotice(r.status);
-      const e = new Error(msg);
-      e.status = r.status;
-      throw e;
-    }
-    return r.json();
-  }
-  const sidecarGet = (path) => sidecar(path, { method: 'GET' });
-  const sidecarPost = (path, body) => sidecar(path, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  });
-  const sidecarPut = (path, body) => sidecar(path, {
-    method: 'PUT',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body || {}),
-  });
-
-  /* ── data loading ───────────────────────────────────────────────────── */
+  /* ── data loading + refresh pipeline ────────────────────────────────── */
 
   async function loadProjects() {
-    const d = await pfApiGet('/api/projects');
+    const d = await apiGet('/api/projects');
     const arr = Array.isArray(d && d.projects) ? d.projects : [];
     state.projects = arr.filter(p => p && typeof p.project_id === 'string' && typeof p.name === 'string');
   }
+  function syncSearchFromDom() {
+    try {
+      const input = document.getElementById('sessionSearch');
+      if (!input) return;
+      state.search = (input.value || '').trim();
+    } catch (_) {}
+  }
+
+  function sessionsUrl() {
+    // mirror core's own sidebar scoping (sessions.js _sessionListQueryString):
+    // the folder view spans all projects, so exclude_hidden is always on; the
+    // WebUI/CLI source tab and the all-profiles switch are read from core.
+    const qs = ['sidebar_source=webui', 'exclude_hidden=1'];
+    try {
+      if (window._showCliSessions) {
+        /* eslint-disable-next-line no-undef */
+        const f = (typeof _sessionSourceFilter !== 'undefined' && _sessionSourceFilter) ? _sessionSourceFilter : 'webui';
+        qs[0] = 'sidebar_source=' + encodeURIComponent(f);
+      }
+    } catch (_) {}
+    try {
+      /* eslint-disable-next-line no-undef */
+      if (typeof _showAllProfiles !== 'undefined' && _showAllProfiles) qs.push('all_profiles=1');
+    } catch (_) {}
+    return '/api/sessions?' + qs.join('&');
+  }
+
   async function loadSessions() {
-    const d = await pfApiGet('/api/sessions');
+    const d = await apiGet(sessionsUrl());
     const arr = Array.isArray(d && d.sessions) ? d.sessions : [];
-    state.sessions = arr.filter(s => s && typeof s.session_id === 'string');
+    // Archived sessions are out of scope for the folder view (README); the
+    // classic sidebar owns them. Everything else — including sessions whose
+    // project_id is unknown — is bucketed here.
+    state.sessions = arr.filter(s => s && typeof s.session_id === 'string' && !s.archived);
   }
-  async function loadBindings() {
-    const d = await sidecarGet('/v1/state');
-    const b = d && typeof d.bindings === 'object' && d.bindings ? d.bindings : {};
-    state.bindings = {};
-    for (const pid of Object.keys(b)) {
-      const ws = b[pid] && typeof b[pid].workspace === 'string' ? b[pid].workspace : null;
-      if (ws) state.bindings[pid] = { workspace: ws };
+
+  function projectBindings(p) {
+    if (!p) return {};
+    const f = coreFn('_projectBindingsForNewSession');
+    if (f) {
+      try {
+        const b = f(p);
+        if (b && typeof b === 'object') return b;
+      } catch (_) {}
     }
-    state.defaultWorkspace = typeof d.default_workspace === 'string' ? d.default_workspace : '';
-    state.sidecarOk = true;
-  }
-  function markSidecarDown() {
-    state.sidecarOk = false;
+    const out = {};
+    const ws = p.default_workspace
+      || (Array.isArray(p.workspaces) && p.workspaces[0]) || p.workspace;
+    if (ws) out.workspace = ws;
+    if (p.model) out.model = p.model;
+    if (p.model_provider) out.model_provider = p.model_provider;
+    return out;
   }
 
   function snapshotHash() {
@@ -245,901 +323,1316 @@
       }
     };
     mix('p');
-    for (const p of state.projects) mix(p.project_id + '|' + p.name + '|' + (p.color || ''));
+    for (const p of state.projects) {
+      mix(p.project_id + '|' + p.name + '|' + (p.color || '') + '|' + (p.default_workspace || '') +
+        '|' + (p.model || '') + '|' + (p.model_provider || ''));
+    }
     mix('s');
     for (const s of state.sessions) {
       mix(s.session_id + '|' + (s.title || '') + '|' + Math.round(Number(s.last_message_at || s.updated_at || 0)) +
-        '|' + (s.project_id || '') + '|' + (s.is_streaming || s.active_stream_id ? 1 : 0) +
-        '|' + (s.attention || '') + '|' + (s.pinned ? 1 : 0) + '|' + (s.archived ? 1 : 0));
+        '|' + (s.project_id || '') + '|' + (s.workspace || '') + '|' + (s.is_streaming || s.active_stream_id ? 1 : 0) +
+        '|' + (s.attention ? s.attention.kind || '1' : '') + '|' + (s.pinned ? 1 : 0) +
+        '|' + (state.titleBusy[s.session_id] ? 1 : 0));
     }
-    mix('b');
-    for (const pid of Object.keys(state.bindings).sort()) mix(pid + '=' + state.bindings[pid].workspace);
-    mix('m' + state.mode + '|' + (state.search || '') + '|' + (state.profile || ''));
+    mix('m' + state.mode + '|' + (state.search || ''));
+    mix('c' + Object.keys(state.collapsed).filter(k => state.collapsed[k]).sort().join(','));
+    mix('v' + Object.keys(state.visibleCounts).sort().map(k => k + ':' + state.visibleCounts[k]).join(','));
+    mix('a' + (activeSid() || ''));
     return String(h >>> 0);
   }
 
-  function scheduleRefresh(opts) {
-    clearTimeout(refreshTimer);
-    refreshTimer = setTimeout(() => { void refresh(opts || {}); }, (opts && opts.delayMs) || 250);
+  function requestRefresh(delayMs) {
+    const now = Date.now();
+    if (!pendingSince) pendingSince = now;
+    // max-wait: a sustained stream of core refreshes must not postpone the
+    // folder refresh indefinitely
+    const waited = now - pendingSince;
+    const base = typeof delayMs === 'number' ? delayMs : 250;
+    const wait = waited > 1500 ? 0 : base;
+    if (debounceTimer) clearTimeout(debounceTimer);
+    debounceTimer = setTimeout(() => {
+      debounceTimer = 0;
+      pendingSince = 0;
+      void runRefresh();
+    }, wait);
   }
 
-  async function refresh(opts) {
-    if (!state.ready || refreshInFlight) return;
+  async function runRefresh() {
+    if (!state.ready) return;
+    if (refreshInFlight) {
+      // Queue exactly one follow-up so an update arriving mid-fetch is not
+      // lost until the next poll.
+      pendingFollowup = true;
+      return;
+    }
     refreshInFlight = true;
     try {
-      const profile = activeProfile();
-      const profileChanged = profile !== lastProfile;
-      lastProfile = profile;
-      state.profile = profile;
-
+      // core's boot/bfcache paths can rewrite the search input without any
+      // event we observe; re-sync before every data round so the folder view
+      // can never keep a filter the classic list has dropped.
+      syncSearchFromDom();
       const results = await Promise.allSettled([loadProjects(), loadSessions()]);
       if (results[0].status !== 'fulfilled' || results[1].status !== 'fulfilled') {
-        // network hiccup — keep previous data, retry shortly
-        scheduleRefresh({ delayMs: 8000 });
+        requestRefresh(8000); // network hiccup — retry soon, keep last render
         return;
       }
-      try {
-        await loadBindings();
-      } catch (_) {
-        markSidecarDown();
-      }
-      // profile change forces a repaint even if content hash is identical
-      const hash = snapshotHash();
-      state.lastHash = hash;
-      render();
+      refreshNow();
     } catch (err) {
-      console.warn('[project-folders] refresh failed', err);
+      console.warn('[' + EXT_ID + '] refresh failed', err);
     } finally {
       refreshInFlight = false;
+      if (pendingFollowup) {
+        pendingFollowup = false;
+        requestRefresh(0);
+      }
     }
   }
 
-  /* ── compatibility ──────────────────────────────────────────────────── */
+  // Repaint only when the snapshot actually changed.
+  function refreshNow() {
+    const hash = snapshotHash();
+    if (hash === state.lastHash) return false;
+    state.lastHash = hash;
+    render();
+    return true;
+  }
+
+  /* ── DOM: skeleton ──────────────────────────────────────────────────── */
 
   function checkCompatibility() {
     const missing = [];
     if (!document.getElementById('sessionList')) missing.push('#sessionList');
     if (!document.getElementById('panelChat')) missing.push('#panelChat');
-    if (typeof window.loadSession !== 'function') missing.push('loadSession()');
-    if (!missing.length) {
-      state.compatible = true;
-    } else {
-      state.compatible = false;
-      state.compatReason = missing.join(', ');
-    }
+    if (!coreFn('_openSidebarSession') && !coreFn('loadSession')) missing.push('session open hook');
+    state.compatible = !missing.length;
+    state.compatReason = missing.join(', ');
   }
 
-  /* ── DOM: skeleton ──────────────────────────────────────────────────── */
+  function ensureToggle() {
+    const head = document.querySelector('#panelChat .panel-head-actions');
+    if (!head) return;
+    let btn = document.getElementById('pf-mode-toggle');
+    if (!btn) {
+      btn = document.createElement('button');
+      btn.id = 'pf-mode-toggle';
+      btn.type = 'button';
+      btn.className = 'panel-icon-btn pf-toggle';
+      // static markup, no user data
+      btn.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+        + '<path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>';
+      btn.addEventListener('click', () => {
+        setMode(state.mode === 'folders' ? 'classic' : 'folders');
+      });
+      head.insertBefore(btn, head.firstChild);
+    }
+    const on = state.mode === 'folders';
+    btn.setAttribute('aria-pressed', on ? 'true' : 'false');
+    const label = on ? L('pf_folders_mode_on', 'Project folders: on')
+      : L('pf_folders_mode_off', 'Project folders: off');
+    btn.setAttribute('aria-label', label);
+    btn.title = label;
+    btn.classList.toggle('pf-on', on);
+  }
 
   function buildDom() {
-    if (document.getElementById('pf-folders')) return;
-    pfRoot = el('div', 'pf-root', null);
-    pfRoot.id = 'pf-folders';
-
-    const bar = el('div', 'pf-modebar');
-    const label = el('span', 'pf-modebar-label', 'Sidebar');
-    const btnFolders = el('button', 'pf-modebtn', 'Folders');
-    const btnClassic = el('button', 'pf-modebtn', 'Classic');
-    btnFolders.type = 'button';
-    btnClassic.type = 'button';
-    btnFolders.onclick = () => setMode('folders');
-    btnClassic.onclick = () => setMode('classic');
-    bar.appendChild(label);
-    const seg = el('span', 'pf-mode-seg');
-    seg.appendChild(btnFolders);
-    seg.appendChild(btnClassic);
-    bar.appendChild(seg);
-    pfRoot.appendChild(bar);
-
-    scrollEl = el('div', 'pf-scroll');
-    scrollEl.id = 'pf-scroll';
-    pfRoot.appendChild(scrollEl);
-
-    const panel = document.getElementById('panelChat');
-    const list = document.getElementById('sessionList');
-    const search = panel ? panel.querySelector('.session-search') : null;
-    const anchor = search || list || (panel ? panel.firstChild : null);
-    if (panel) {
-      if (anchor && anchor.parentNode === panel) panel.insertBefore(pfRoot, anchor);
-      else panel.appendChild(pfRoot);
+    if (document.getElementById('pf-folders')) {
+      pfRoot = document.getElementById('pf-folders');
+      scrollEl = document.getElementById('pf-scroll');
     } else {
-      document.body.appendChild(pfRoot);
+      pfRoot = el('div', 'pf-root');
+      pfRoot.id = 'pf-folders';
+      scrollEl = el('div', 'pf-scroll');
+      scrollEl.id = 'pf-scroll';
+      pfRoot.appendChild(scrollEl);
+      const panel = document.getElementById('panelChat');
+      const list = document.getElementById('sessionList');
+      // Insert before #sessionList so core's search box stays on top.
+      if (panel && list && list.parentNode === panel) panel.insertBefore(pfRoot, list);
+      else if (panel) panel.appendChild(pfRoot);
+      else return;
     }
+    ensureToggle();
 
-    // search mirroring (core input, our list)
+    // Search state sync: typing fires 'input'; core's clear button and the
+    // Escape path rewrite the value WITHOUT an input event, so also watch
+    // the clear button's hidden attribute (core keeps it in sync with the
+    // value on every filterSessions()/clearSessionSearch() pass), and
+    // re-sync unconditionally inside every runRefresh().
     const input = document.getElementById('sessionSearch');
     if (input) {
-      const onInput = debounce(() => {
-        state.search = (input.value || '').trim();
-        render();
-      }, 150);
-      input.addEventListener('input', onInput);
+      const syncSearch = debounce(() => {
+        const q = (input.value || '').trim();
+        if (q !== state.search) {
+          state.search = q;
+          refreshNow();
+        }
+      }, 120);
+      input.addEventListener('input', syncSearch);
+      const clearBtn = document.getElementById('sessionSearchClear');
+      if (clearBtn) {
+        clearBtn.addEventListener('click', () => setTimeout(syncSearch, 0));
+        try {
+          new MutationObserver(syncSearch).observe(clearBtn, {
+            attributes: true, attributeFilter: ['hidden'],
+          });
+        } catch (_) {}
+      }
       state.search = (input.value || '').trim();
     }
 
-    // events
-    try {
-      sse = new EventSource('/api/sessions/events');
-      sse.addEventListener('sessions_changed', (ev) => {
+    // No EventSource here: core owns /api/sessions/events. We piggyback on
+    // core's own sidebar refresh pipeline by wrapping window.refreshSessionList
+    // (exported by core at sessions.js) — a pure pass-through that also
+    // schedules our (hash-guarded, cheap) refresh. A 30s visibility-aware
+    // poll covers the rest.
+    const orig = window.refreshSessionList;
+    if (typeof orig === 'function' && !orig.__pfWrapped) {
+      const wrapped = function () {
+        const r = orig.apply(this, arguments);
         try {
-          const payload = ev && typeof ev.data === 'string' ? JSON.parse(ev.data) : {};
-          const p = payload && typeof payload.profile === 'string' ? payload.profile : '';
-          if (p && p !== activeProfile()) return;
-          scheduleRefresh({ delayMs: 300 });
-        } catch (_) {
-          scheduleRefresh({ delayMs: 500 });
-        }
-      });
-      sse.onerror = () => { /* core reconnects itself; we rely on polling */ };
-    } catch (_) { sse = null; }
+          if (state.mode === 'folders') requestRefresh(350);
+        } catch (_) {}
+        return r;
+      };
+      wrapped.__pfWrapped = true;
+      window.refreshSessionList = wrapped;
+    }
 
     pollTimer = setInterval(() => {
       if (document.hidden) return;
-      void refresh({});
-    }, 30000);
+      requestRefresh(0);
+    }, POLL_MS);
     timeTimer = setInterval(() => {
       if (document.hidden || !scrollEl) return;
       updateTimesInPlace();
     }, 60000);
-    // The open chat may come from anywhere (deep link, search, restore). If it
-    // changes, re-render so its row is guaranteed visible in its folder even
-    // when it sorts below the 5-row window.
-    activeTimer = setInterval(() => {
-      if (document.hidden) return;
-      let cur = null;
-      try { cur = (typeof S !== 'undefined' && S.session && S.session.session_id) || null; } catch (_) { cur = null; }
-      if (cur !== lastActiveSid) {
-        lastActiveSid = cur;
-        if (state.mode === 'folders' && state.ready) render();
-      }
-    }, 1500);
     document.addEventListener('visibilitychange', () => {
-      if (!document.hidden) void refresh({});
+      if (!document.hidden) requestRefresh(300);
     });
+
+    // Active-row highlight without a poll: core's session-open extension hook
+    // fires from loadSession(); newSession() owns its own
+    // window.refreshSessionList('new-session') call, caught by the wrapper.
+    try {
+      const reg = coreFn('registerHermesSessionOpenHandler');
+      if (reg) reg(() => { refreshNow(); });
+    } catch (_) {}
   }
 
+  function setMode(mode) {
+    state.mode = mode === 'classic' ? 'classic' : 'folders';
+    lsSet(LS.mode, state.mode);
+    applyMode();
+  }
   function applyMode() {
-    try { document.body.classList.toggle('pf-mode-folders', state.mode === 'folders'); } catch (_) {}
+    try {
+      // never hide core's list while incompatible: without the header toggle
+      // there would be no way back to the classic sidebar
+      document.body.classList.toggle('pf-mode-folders', state.mode === 'folders' && state.compatible);
+    } catch (_) {}
+    ensureToggle();
     if (state.mode === 'folders') {
-      render();
+      state.lastHash = '';
+      refreshNow();
     }
   }
 
-  /* ── DOM: render ────────────────────────────────────────────────────── */
+  /* ── DOM: render (reconcile, never full-rebuild per refresh) ─────────── */
 
   function visibleSessions() {
     const q = state.search.toLowerCase();
-    const out = [];
-    for (const s of state.sessions) {
-      if (s.archived) continue;
-      if (q) {
-        const t = String(s.title || '').toLowerCase();
-        if (t.indexOf(q) === -1) continue;
-      }
-      out.push(s);
-    }
-    return out;
+    if (!q) return state.sessions;
+    return state.sessions.filter((s) => {
+      const t0 = String(s.title || '').toLowerCase();
+      const sid = String(s.session_id || '').toLowerCase();
+      return t0.indexOf(q) !== -1 || sid.indexOf(q) !== -1;
+    });
   }
 
+  function rowTs(s) {
+    return Number(s.last_message_at || s.updated_at || s.created_at || 0);
+  }
   function sortRows(rows) {
-    const ts = (s) => Number(s.last_message_at || s.updated_at || s.created_at || 0);
     return rows.slice().sort((a, b) => {
-      if (a.pinned !== b.pinned) return a.pinned ? -1 : 1;
-      const d = ts(b) - ts(a);
+      if (!!a.pinned !== !!b.pinned) return a.pinned ? -1 : 1;
+      const d = rowTs(b) - rowTs(a);
       if (d !== 0) return d;
       return String(a.session_id).localeCompare(String(b.session_id));
     });
   }
 
-  function openSession(sid) {
-    try {
-      if (typeof window.loadSession === 'function') { window.loadSession(sid); return; }
-    } catch (_) {}
-    try { location.href = '/session/' + encodeURIComponent(sid); } catch (_) {}
+  function findProject(pid) {
+    for (const p of state.projects) if (p.project_id === pid) return p;
+    return null;
   }
 
-  function makeRow(s, project) {
-    const row = el('div', 'pf-row');
-    row.dataset.sid = s.session_id;
-    if (s.is_streaming || s.active_stream_id) row.classList.add('pf-streaming');
-    if (s.attention) row.classList.add('pf-attention');
-    if (s.pinned) row.classList.add('pf-pinned');
-    if (s.read_only) row.classList.add('pf-readonly');
-
-    const title = el('span', 'pf-row-title', s.title || 'Untitled');
-    if (s.is_streaming || s.active_stream_id) {
-      const dot = el('span', 'pf-dot-live', '');
-      dot.title = 'streaming';
-      title.appendChild(dot);
-    } else if (s.attention) {
-      const dot = el('span', 'pf-dot-att', '');
-      dot.title = String(s.attention);
-      title.appendChild(dot);
-    }
-    row.appendChild(title);
-    const time = el('span', 'pf-row-time');
-    time.dataset.ts = String(s.last_message_at || s.updated_at || s.created_at || '');
-    time.textContent = relTime(Number(s.last_message_at || s.updated_at || s.created_at || 0));
-    row.appendChild(time);
-
-    const more = el('button', 'pf-row-more', '⋯');
-    more.type = 'button';
-    more.title = 'Actions';
-    more.onclick = (e) => {
-      e.stopPropagation();
-      openMenu(rowMenuItems(s, project), more, { x: -14 });
-    };
-    row.appendChild(more);
-
-    row.onclick = () => openSession(s.session_id);
-    row.ondblclick = (e) => e.stopPropagation();
-
-    // drag & drop (desktop only)
-    if (finePointer()) {
-      row.setAttribute('draggable', 'true');
-      row.addEventListener('dragstart', (e) => {
-        try {
-          e.dataTransfer.setData(DND_MIME, s.session_id);
-          e.dataTransfer.setData('text/plain', s.title || s.session_id);
-          e.dataTransfer.effectAllowed = 'move';
-          row.classList.add('pf-dragging');
-        } catch (_) {}
-      });
-      row.addEventListener('dragend', () => row.classList.remove('pf-dragging'));
-    }
-    return row;
-  }
-
-  function finePointer() {
-    try { return window.matchMedia && window.matchMedia('(pointer: fine)').matches; }
-    catch (_) { return false; }
-  }
-
-  function makeNewChatRow(projectId) {
-    const row = el('div', 'pf-row pf-newchat', null);
-    const t = el('span', 'pf-row-title pf-newchat-label', '+ New chat');
-    row.appendChild(t);
-    row.onclick = (e) => {
-      e.stopPropagation();
-      void newChatInProject(projectId);
-    };
-    return row;
-  }
-
-  function makeGroupHeader(project, count, isUnassigned) {
-    const h = el('div', 'pf-group-header');
-    h.dataset.projectId = isUnassigned ? '' : (project ? project.project_id : '');
-    const chev = el('span', 'pf-chevron', state.collapsed[h.dataset.projectId || 'unassigned'] ? '▸' : '▾');
-    h.appendChild(chev);
-    if (!isUnassigned && project && project.color) {
-      const dot = el('span', 'pf-dot');
-      dot.style.background = project.color;
-      h.appendChild(dot);
-    }
-    const name = el('span', 'pf-group-name', isUnassigned ? 'Unassigned' : (project.name || 'Project'));
-    h.appendChild(name);
-    const cnt = el('span', 'pf-count', String(count));
-    h.appendChild(cnt);
-
-    const actions = el('span', 'pf-group-actions');
-    if (!isUnassigned) {
-      const plus = el('button', 'pf-icon-btn', '+');
-      plus.type = 'button';
-      plus.title = 'New chat in ' + (project.name || 'project');
-      plus.onclick = (e) => { e.stopPropagation(); void newChatInProject(project.project_id); };
-      actions.appendChild(plus);
-
-      const ws = state.bindings[project.project_id];
-      const gear = el('button', 'pf-icon-btn', '⚙');
-      gear.type = 'button';
-      gear.title = ws ? 'Project settings (workspace: ' + ws.workspace + ')' : 'Project settings';
-      gear.onclick = (e) => { e.stopPropagation(); openMenu(projectMenuItems(project), gear); };
-      actions.appendChild(gear);
-    }
-    h.appendChild(actions);
-
-    h.onclick = () => toggleCollapse(h.dataset.projectId || 'unassigned');
-    // drop target
-    if (finePointer()) {
-      h.addEventListener('dragover', (e) => {
-        if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types, DND_MIME) !== -1) {
-          e.preventDefault();
-          e.dataTransfer.dropEffect = 'move';
-          h.classList.add('pf-droptarget');
-        }
-      });
-      h.addEventListener('dragleave', () => h.classList.remove('pf-droptarget'));
-      h.addEventListener('drop', (e) => {
-        h.classList.remove('pf-droptarget');
-        const sid = e.dataTransfer.getData(DND_MIME);
-        if (!sid) return;
-        e.preventDefault();
-        void moveSession(sid, isUnassigned ? null : (project ? project.project_id : null));
-      });
-    }
-    return h;
-  }
-
-  function toggleCollapse(key) {
-    state.collapsed[key] = !state.collapsed[key];
-    lsSetObj(LS.collapse, state.collapsed);
-    if (!state.collapsed[key]) state.visibleCounts[key] = PAGE_SIZE; // re-expand → compact 5
-    render();
-  }
-
-  function render() {
-    if (!pfRoot || state.mode !== 'folders') return;
-    if (!state.compatible) { renderIncompatible(); return; }
-    scrollEl.innerHTML = '';
-
+  function computeGroups() {
     const sessions = visibleSessions();
     const byProject = {};
     const unassigned = [];
     for (const s of sessions) {
-      if (s.project_id) {
+      if (s.project_id && findProject(s.project_id)) {
         (byProject[s.project_id] = byProject[s.project_id] || []).push(s);
       } else {
+        // Unknown project_id (deleted/cross-profile project) falls back to
+        // Unassigned instead of silently disappearing.
         unassigned.push(s);
       }
     }
-
-    let anyGroup = false;
+    const groups = [];
     for (const project of state.projects) {
-      const rows = sortRows(byProject[project.project_id] || []);
-      scrollEl.appendChild(renderGroup(project, rows, false));
-      anyGroup = true;
+      groups.push({
+        key: project.project_id,
+        project,
+        rows: sortRows(byProject[project.project_id] || []),
+      });
     }
-    // projects that have no sessions at all still appear (empty folder)
-    if (unassigned.length) {
-      scrollEl.appendChild(renderGroup(null, sortRows(unassigned), true));
-      anyGroup = true;
+    if (unassigned.length || !state.projects.length) {
+      groups.push({ key: 'unassigned', project: null, rows: sortRows(unassigned) });
     }
-    if (!anyGroup) {
-      const empty = el('div', 'pf-empty', 'No conversations yet. Create a project or start a chat.');
-      scrollEl.appendChild(empty);
-    }
+    return groups;
   }
 
   function groupVisibleCount(key, rows) {
     let n = Number(state.visibleCounts[key]) || PAGE_SIZE;
     if (n < PAGE_SIZE) n = PAGE_SIZE;
-    // CRITICAL: the currently open chat stays visible even when it sorts
-    // below the first page — extend the window to include it.
-    let activeId = null;
-    try { activeId = (typeof S !== 'undefined' && S.session && S.session.session_id) || null; } catch (_) { activeId = null; }
-    if (activeId) {
-      const idx = rows.findIndex((r) => r.session_id === activeId);
-      if (idx >= n) n = idx + 1;
+    // The open chat stays visible when it sorts just below the first pages —
+    // the window extends up to a cap so one stuck-at-the-bottom chat can
+    // never turn the folder into a 200-row list. Beyond the cap the open
+    // row appears through "Show more".
+    const CAP = PAGE_SIZE * 3;
+    const aSid = activeSid();
+    if (aSid) {
+      const idx = rows.findIndex((r) => r.session_id === aSid);
+      if (idx >= n && idx < CAP) n = idx + 1;
     }
     if (n > rows.length) n = rows.length;
     return n;
   }
 
-  function renderGroup(project, rows, isUnassigned) {
-    const key = isUnassigned ? 'unassigned' : project.project_id;
-    const g = el('div', 'pf-group');
-    g.appendChild(makeGroupHeader(project, rows.length, isUnassigned));
-    if (!state.collapsed[key]) {
-      const body = el('div', 'pf-group-body');
-      const n = groupVisibleCount(key, rows);
-      for (let i = 0; i < n; i++) body.appendChild(makeRow(rows[i], project));
-      const remaining = rows.length - n;
-      if (remaining > 0) {
-        const more = el('button', 'pf-showmore', 'Show ' + Math.min(PAGE_SIZE, remaining) + ' more · ' + remaining + ' remaining');
-        more.type = 'button';
-        more.onclick = () => {
-          state.visibleCounts[key] = groupVisibleCount(key, rows) + PAGE_SIZE;
-          render();
-        };
-        body.appendChild(more);
-      }
-      if (n > PAGE_SIZE) {
-        const less = el('button', 'pf-showless', 'Show less');
-        less.type = 'button';
-        less.onclick = () => {
-          state.visibleCounts[key] = PAGE_SIZE;
-          render();
-        };
-        body.appendChild(less);
-      }
-      body.appendChild(makeNewChatRow(isUnassigned ? null : project.project_id));
-      g.appendChild(body);
+  function isCollapsed(key) { return !!state.collapsed[key]; }
+
+  function captureFocusKey() {
+    try {
+      const a = document.activeElement;
+      if (!a || !scrollEl || !scrollEl.contains(a)) return null;
+      const holder = a.closest('[data-pfk]');
+      if (!holder) return null;
+      lastFocusKey = holder.getAttribute('data-pfk');
+      return lastFocusKey;
+    } catch (_) { return null; }
+  }
+  function restoreFocusKey(key) {
+    if (!key || !scrollEl) return;
+    let target = null;
+    try {
+      const a = document.activeElement;
+      if (a && scrollEl.contains(a)) return; // focus survived the reconcile
+      target = scrollEl.querySelector('[data-pfk="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+    } catch (_) { return; }
+    if (!target || typeof target.focus !== 'function') return;
+    try { target.focus({ preventScroll: true }); } catch (_) {
+      try { target.focus(); } catch (_) {}
     }
-    return g;
+  }
+
+  function render() {
+    if (!pfRoot || state.mode !== 'folders') return;
+    if (!state.compatible) { renderIncompatible(); return; }
+    const focusKey = captureFocusKey();
+    const groups = computeGroups();
+
+    if (!groups.length) {
+      setScrollEmpty(L('pf_no_projects_hint', 'No conversations yet. Create a project or start a chat.'));
+      return;
+    }
+    clearScrollEmpty();
+
+    // Group order: reconcile existing maps to desired order.
+    const seen = new Set();
+    let prevEl = null;
+    for (const g of groups) {
+      seen.add(g.key);
+      let dom = groupDom.get(g.key);
+      if (!dom) dom = createGroupDom(g);
+      updateGroup(g, dom);
+      // position
+      const anchor = prevEl ? prevEl.nextSibling : scrollEl.firstChild;
+      if (anchor !== dom.groupEl) scrollEl.insertBefore(dom.groupEl, anchor);
+      prevEl = dom.groupEl;
+    }
+    for (const [key, dom] of Array.from(groupDom)) {
+      if (!seen.has(key)) {
+        try { dom.groupEl.remove(); } catch (_) {}
+        groupDom.delete(key);
+      }
+    }
+
+    if (focusKey) restoreFocusKey(focusKey);
+  }
+
+  let emptyEl = null;
+  function setScrollEmpty(msg) {
+    for (const [key, dom] of Array.from(groupDom)) {
+      try { dom.groupEl.remove(); } catch (_) {}
+      groupDom.delete(key);
+    }
+    if (!emptyEl) { emptyEl = el('div', 'pf-empty'); scrollEl.appendChild(emptyEl); }
+    emptyEl.textContent = msg;
+    emptyEl.style.display = '';
+  }
+  function clearScrollEmpty() {
+    if (emptyEl) emptyEl.style.display = 'none';
   }
 
   function renderIncompatible() {
     scrollEl.innerHTML = '';
+    groupDom.clear();
     const box = el('div', 'pf-empty pf-incompatible');
     box.appendChild(el('div', null, 'Project Folders extension is inactive: the WebUI version is missing expected hooks (' + state.compatReason + ').'));
-    box.appendChild(el('div', 'pf-empty-hint', 'Switch to Classic sidebar mode to continue using the standard list. The extension will retry after a WebUI update/reload.'));
-    const back = el('button', 'pf-modebtn pf-incompat-back', 'Switch to Classic');
-    back.type = 'button';
-    back.onclick = () => setMode('classic');
-    box.appendChild(back);
+    box.appendChild(el('div', 'pf-empty-hint', 'Switch to the classic sidebar (folder icon in the Chat panel header) to continue using the standard list.'));
     scrollEl.appendChild(box);
   }
 
   function updateTimesInPlace() {
     if (!scrollEl) return;
     const nodes = scrollEl.querySelectorAll('.pf-row-time[data-ts]');
-    for (const n of nodes) {
-      const ts = Number(n.dataset.ts || 0);
-      n.textContent = relTime(ts);
-    }
+    for (const n of nodes) n.textContent = relTime(Number(n.dataset.ts || 0));
   }
 
-  /* ── actions ────────────────────────────────────────────────────────── */
+  /* ── group DOM construction / reconciliation ────────────────────────── */
+
+  function createGroupDom(g) {
+    const groupEl = el('div', 'pf-group');
+    groupEl.dataset.key = g.key;
+
+    const header = el('div', 'pf-group-header');
+    const toggle = el('button', 'pf-group-toggle');
+    toggle.type = 'button';
+    toggle.dataset.pfk = 'g:' + g.key;
+    const chev = el('span', 'pf-chevron');
+    toggle.appendChild(chev);
+    const dot = el('span', 'pf-dot');
+    toggle.appendChild(dot);
+    const name = el('span', 'pf-group-name');
+    toggle.appendChild(name);
+    const cnt = el('span', 'pf-count');
+    toggle.appendChild(cnt);
+    toggle.addEventListener('click', () => toggleCollapse(g.key));
+
+    const actions = el('span', 'pf-group-actions');
+    const plus = el('button', 'pf-icon-btn pf-group-plus', '+');
+    plus.type = 'button';
+    plus.dataset.pfk = 'gp:' + g.key;
+    plus.addEventListener('click', (e) => {
+      e.stopPropagation();
+      void newChatInProject(g.key === 'unassigned' ? null : g.key);
+    });
+    const gear = el('button', 'pf-icon-btn pf-group-gear', '⚙');
+    gear.type = 'button';
+    gear.dataset.pfk = 'gg:' + g.key;
+    gear.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openProjectMenu(g.key, gear);
+    });
+    actions.appendChild(plus);
+    actions.appendChild(gear);
+    header.appendChild(toggle);
+    header.appendChild(actions);
+
+    // drop target (desktop, drag a row onto the header)
+    try {
+      if (window.matchMedia && window.matchMedia('(pointer: fine)').matches) {
+        header.addEventListener('dragover', (e) => {
+          if (e.dataTransfer && Array.prototype.indexOf.call(e.dataTransfer.types, DND_MIME) !== -1) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            header.classList.add('pf-droptarget');
+          }
+        });
+        header.addEventListener('dragleave', () => header.classList.remove('pf-droptarget'));
+        header.addEventListener('drop', (e) => {
+          header.classList.remove('pf-droptarget');
+          const sid = e.dataTransfer.getData(DND_MIME);
+          if (!sid) return;
+          e.preventDefault();
+          void moveSession(sid, g.key === 'unassigned' ? null : g.key);
+        });
+      }
+    } catch (_) {}
+
+    const bodyEl = el('div', 'pf-group-body');
+    groupEl.appendChild(header);
+    groupEl.appendChild(bodyEl);
+
+    const dom = {
+      groupEl, header, bodyEl,
+      els: { chev, dot, name, cnt, plus, gear, toggle },
+      rows: new Map(),
+      showMore: null,
+      showLess: null,
+      newChatBtn: null,
+      emptyNote: null,
+    };
+    groupDom.set(g.key, dom);
+    return dom;
+  }
+
+  function updateGroup(g, dom) {
+    const collapsed = isCollapsed(g.key);
+    const { chev, dot, name, cnt, plus, gear, toggle } = dom.els;
+    chev.textContent = collapsed ? '▸' : '▾';
+    const isUn = g.key === 'unassigned';
+    const label = isUn ? L('pf_unassigned', 'Unassigned') : (g.project && g.project.name) || 'Project';
+    if (name.textContent !== label) name.textContent = label;
+    toggle.setAttribute('aria-expanded', collapsed ? 'false' : 'true');
+    const toggleLabel = (collapsed ? '▸ ' : '▾ ') + label + ' (' + g.rows.length + ')';
+    toggle.setAttribute('aria-label', toggleLabel);
+    if (cnt.textContent !== String(g.rows.length)) cnt.textContent = String(g.rows.length);
+    dot.style.display = (!isUn && g.project && g.project.color) ? '' : 'none';
+    if (!isUn && g.project && g.project.color) dot.style.background = g.project.color;
+    plus.style.display = isUn ? '' : '';
+    plus.title = isUn
+      ? L('pf_new_chat_unassigned', 'New unassigned chat')
+      : Lf('pf_new_chat_in', 'New chat in {0}', label);
+    plus.setAttribute('aria-label', plus.title);
+    gear.style.display = isUn ? 'none' : '';
+    gear.title = L('pf_project_actions', 'Project actions');
+    gear.setAttribute('aria-label', gear.title);
+    dom.groupEl.classList.toggle('pf-collapsed', collapsed);
+
+    if (collapsed) {
+      dom.bodyEl.style.display = 'none';
+      return;
+    }
+    dom.bodyEl.style.display = '';
+
+    const n = groupVisibleCount(g.key, g.rows);
+    const wantRows = g.rows.slice(0, n);
+    const aSid = activeSid();
+
+    // reconcile rows by session_id
+    let prev = dom.bodyEl.firstChild;
+    const seen = new Set();
+    for (const s of wantRows) {
+      seen.add(s.session_id);
+      let rowDom = dom.rows.get(s.session_id);
+      if (!rowDom) {
+        rowDom = createRowDom(s);
+        dom.rows.set(s.session_id, rowDom);
+      }
+      updateRow(s, rowDom, s.session_id === aSid);
+      if (prev === rowDom.rowEl) prev = prev.nextSibling;
+      else {
+        dom.bodyEl.insertBefore(rowDom.rowEl, prev);
+      }
+    }
+    // rows that fell out of the window / group
+    for (const [sid, rowDom] of Array.from(dom.rows)) {
+      if (seen.has(sid)) continue;
+      try { rowDom.rowEl.remove(); } catch (_) {}
+      dom.rows.delete(sid);
+    }
+
+    // pager + new-chat row (kept after rows, in stable order)
+    const remaining = g.rows.length - n;
+    dom.showMore = ensureButton(dom.bodyEl, dom.showMore, 'pf-showmore', 'sm:' + g.key,
+      remaining > 0 ? Lf('pf_show_more', 'Show {0} more · {1} remaining', Math.min(PAGE_SIZE, remaining), remaining) : null,
+      () => {
+        state.visibleCounts[g.key] = groupVisibleCount(g.key, g.rows) + PAGE_SIZE;
+        state.lastHash = snapshotHash();
+        render();
+      });
+    dom.emptyNote = ensureText(dom.bodyEl, dom.emptyNote, 'pf-group-empty',
+      (n === 0) ? L('pf_empty_group', 'No chats in this project yet.') : null);
+    dom.showLess = ensureButton(dom.bodyEl, dom.showLess, 'pf-showless', 'sl:' + g.key,
+      n > PAGE_SIZE ? L('pf_show_less', 'Show less') : null,
+      () => {
+        state.visibleCounts[g.key] = PAGE_SIZE;
+        state.lastHash = snapshotHash();
+        render();
+      });
+    dom.newChatBtn = ensureButton(dom.bodyEl, dom.newChatBtn, 'pf-newchat', 'nc:' + g.key,
+      '+ ' + L('pf_new_chat_here', 'New chat here'),
+      () => { void newChatInProject(g.key === 'unassigned' ? null : g.key); });
+    // "New chat here" is always the last row of a group, independent of
+    // which pagers were (re)created this pass
+    try {
+      if (dom.newChatBtn && dom.newChatBtn.parentNode === dom.bodyEl && dom.newChatBtn.nextSibling) {
+        dom.bodyEl.appendChild(dom.newChatBtn);
+      }
+    } catch (_) {}
+  }
+
+  function ensureButton(container, current, cls, pfk, label, onClick) {
+    if (label === null || label === undefined) {
+      if (current) { try { current.remove(); } catch (_) {} }
+      return null;
+    }
+    if (!current || current.parentNode !== container) {
+      const b = el('button', cls);
+      b.type = 'button';
+      b.dataset.pfk = pfk;
+      b.textContent = label;
+      b.addEventListener('click', onClick);
+      container.appendChild(b);
+      return b;
+    }
+    if (current.textContent !== label) current.textContent = label;
+    return current;
+  }
+  function ensureText(container, current, cls, text) {
+    if (!text) {
+      if (current) { try { current.remove(); } catch (_) {} }
+      return null;
+    }
+    if (!current || current.parentNode !== container) {
+      const d = el('div', cls, text);
+      container.appendChild(d);
+      return d;
+    }
+    if (current.textContent !== text) current.textContent = text;
+    return current;
+  }
+
+  function toggleCollapse(key) {
+    state.collapsed[key] = !state.collapsed[key];
+    lsSetObj(LS.collapse, state.collapsed);
+    if (!state.collapsed[key]) state.visibleCounts[key] = PAGE_SIZE;
+    state.lastHash = snapshotHash();
+    render();
+  }
+
+  /* ── row DOM ─────────────────────────────────────────────────────────── */
+
+  function createRowDom(s) {
+    const rowEl = el('div', 'pf-row');
+    rowEl.dataset.sid = s.session_id;
+
+    const open = el('button', 'pf-row-open');
+    open.type = 'button';
+    open.dataset.pfk = 'r:' + s.session_id;
+    const title = el('span', 'pf-row-title');
+    open.appendChild(title);
+    const liveDot = el('span', 'pf-dot pf-dot-live');
+    liveDot.style.display = 'none';
+    const attDot = el('span', 'pf-dot pf-dot-att');
+    attDot.style.display = 'none';
+    title.appendChild(el('span', 'pf-row-label'));
+    title.appendChild(liveDot);
+    title.appendChild(attDot);
+    open.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openSessionRow(s.session_id);
+    });
+
+    const time = el('span', 'pf-row-time');
+    const more = el('button', 'pf-row-more', '⋯');
+    more.type = 'button';
+    more.dataset.pfk = 'm:' + s.session_id;
+    more.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openRowMenu(s.session_id, more);
+    });
+
+    rowEl.appendChild(open);
+    rowEl.appendChild(time);
+    rowEl.appendChild(more);
+
+    // drag & drop move (desktop only)
+    try {
+      if (window.matchMedia && window.matchMedia('(pointer: fine)').matches) {
+        rowEl.setAttribute('draggable', 'true');
+        rowEl.addEventListener('dragstart', (e) => {
+          try {
+            e.dataTransfer.setData(DND_MIME, s.session_id);
+            // read the *current* title from state; the closure's snapshot
+            // goes stale after a rename
+            let cur = s;
+            try { cur = state.sessions.find((x) => x.session_id === s.session_id) || s; } catch (_) {}
+            e.dataTransfer.setData('text/plain', cur.title || s.session_id);
+            e.dataTransfer.effectAllowed = 'move';
+            rowEl.classList.add('pf-dragging');
+          } catch (_) {}
+        });
+        rowEl.addEventListener('dragend', () => rowEl.classList.remove('pf-dragging'));
+      }
+    } catch (_) {}
+
+    const dom = { rowEl, open, title, label: title.querySelector('.pf-row-label'), liveDot, attDot, time, more };
+    return dom;
+  }
+
+  function updateRow(s, dom, active) {
+    const label = state.titleBusy[s.session_id]
+      ? L('pf_title_regenerating', 'Regenerating title…')
+      : (s.title || L('pf_untitled', 'Untitled'));
+    if (dom.label.textContent !== label) dom.label.textContent = label;
+    const ts = rowTs(s);
+    const tstr = relTime(ts);
+    if (dom.time.dataset.ts !== String(ts)) dom.time.dataset.ts = String(ts);
+    if (dom.time.textContent !== tstr) dom.time.textContent = tstr;
+    const streaming = !!(s.is_streaming || s.active_stream_id);
+    dom.liveDot.style.display = streaming ? '' : 'none';
+    const att = s.attention && s.attention.kind ? s.attention.kind : '';
+    dom.attDot.style.display = (!streaming && att) ? '' : 'none';
+    dom.rowEl.classList.toggle('pf-streaming', streaming);
+    dom.rowEl.classList.toggle('pf-attention', !streaming && !!att);
+    dom.rowEl.classList.toggle('pf-pinned', !!s.pinned);
+    dom.rowEl.classList.toggle('pf-readonly', isReadOnlySession(s));
+    dom.rowEl.classList.toggle('pf-active', !!active);
+    if (active) dom.open.setAttribute('aria-current', 'page');
+    else dom.open.removeAttribute('aria-current');
+    dom.open.title = s.title || s.session_id;
+  }
+
+  /* ── session actions ────────────────────────────────────────────────── */
+
+  function fallbackOpenSid(sid) {
+    const load = coreFn('loadSession');
+    if (load) { try { load(sid); return; } catch (_) {} }
+    try { location.href = '/session/' + encodeURIComponent(sid); } catch (_) {}
+  }
+
+  function openSessionRow(sid) {
+    const s = state.sessions.find((x) => x.session_id === sid);
+    const openFn = coreFn('_openSidebarSession');
+    if (openFn && s) {
+      // core path: runs extension session-open hooks + closes the mobile drawer
+      try {
+        const r = openFn(s, {});
+        if (r && typeof r.then === 'function') r.then(null, () => fallbackOpenSid(sid));
+        return;
+      } catch (err) {
+        console.warn('[' + EXT_ID + '] _openSidebarSession failed', err);
+        fallbackOpenSid(sid);
+        return;
+      }
+    }
+    fallbackOpenSid(sid);
+  }
+
+  // mirroring core: after deleting/archiving the OPEN chat, move to the most
+  // recent remaining conversation so the UI is never bound to a dead id
+  function reopenNextAfter(sid) {
+    if (activeSid() !== sid) return;
+    let next = null;
+    for (const s of state.sessions) {
+      if (s.session_id === sid) continue;
+      if (!next || rowTs(s) > rowTs(next)) next = s;
+    }
+    if (next) openSessionRow(next.session_id);
+    // no remaining session: leave the transcript as-is; the next page load
+    // restores cleanly (core's own archive path behaves the same way)
+  }
+
+  // keep the open chat's header title in sync (core does this in its own
+  // rename/regenerate paths)
+  function syncOpenTitle(sid, title) {
+    if (!title) return;
+    try {
+      const s = coreS();
+      if (s && s.session && s.session.session_id === sid) {
+        s.session.title = title;
+        const st = coreFn('syncTopbar');
+        if (st) st();
+      }
+    } catch (_) {}
+  }
 
   async function newChatInProject(projectId) {
+    // mirror core's "+" reuse guard (#1171/#1432) for the unscoped case: an
+    // empty, idle open chat is reused instead of piling up new empty rows
+    if (!projectId) {
+      try {
+        const reusable = coreFn('_currentSessionIsReusableEmptyChat');
+        if (reusable && reusable()) {
+          const composer = document.getElementById('msg');
+          if (composer && typeof composer.focus === 'function') { try { composer.focus(); } catch (_) {} }
+          return;
+        }
+      } catch (_) {}
+    }
+    const opts = { project_id: projectId || null };
+    if (projectId) {
+      // core skips its binding merge when project_id is present, so forward
+      // the project's bindings ourselves.
+      const p = findProject(projectId);
+      const b = projectBindings(p);
+      if (b.workspace) opts.workspace = b.workspace;
+      if (b.model) opts.model = b.model;
+      if (b.model_provider) opts.model_provider = b.model_provider;
+    }
     try {
-      const body = { profile: activeProfile() };
-      const binding = projectId ? state.bindings[projectId] : null;
-      if (projectId) body.project_id = projectId;
-      if (binding && binding.workspace) body.workspace = binding.workspace;
-      // Use the core quick-create path when it can do the job (no explicit
-      // workspace needed); otherwise hit the stock session API directly with
-      // workspace + project_id atomically.
-      const useCore = !binding && typeof window.newSession === 'function';
-      if (useCore) {
-        const opts = {};
-        if (projectId) opts.project_id = projectId;
-        await window.newSession(true, opts);
+      const ns = coreFn('newSession');
+      if (ns) {
+        await ns(false, opts);
+        const closeDrawer = coreFn('closeMobileSidebar');
+        if (closeDrawer) { try { closeDrawer(); } catch (_) {} }
       } else {
-        const data = await pfApiPost('/api/session/new', body);
+        // stock API fallback: same fields explicitly
+        const data = await apiPost('/api/session/new', Object.assign({
+          workspace: opts.workspace || undefined,
+        }, { project_id: opts.project_id }));
         const sid = data && data.session && data.session.session_id;
         if (!sid) throw new Error('session created without id');
-        await openSession(sid);
+        openSessionRow(sid);
       }
-      scheduleRefresh({ delayMs: 100 });
+      requestRefresh(100);
     } catch (err) {
-      toast('New chat failed: ' + (err && err.message || err), 4000);
+      toast(L('pf_new_chat_failed', 'New chat failed') + ': ' + ((err && err.message) || err), 4000);
     }
   }
 
   async function moveSession(sid, projectId) {
     try {
-      await pfApiPost('/api/session/move', { session_id: sid, project_id: projectId || null });
-      toast(projectId ? 'Moved to project' : 'Removed from project');
-      scheduleRefresh({ delayMs: 100 });
+      await apiPost('/api/session/move', { session_id: sid, project_id: projectId || null });
+      toast(projectId ? L('pf_moved_to_project', 'Moved to project') : L('pf_removed_from_project', 'Removed from project'));
+      requestRefresh(100);
     } catch (err) {
-      toast('Move failed: ' + (err && err.message || err), 4000);
+      toast(L('pf_move_failed', 'Move failed') + ': ' + ((err && err.message) || err), 4000);
     }
   }
 
-  async function useProjectWorkspace(sid, workspace) {
+  async function renameSession(s, title) {
     try {
-      await pfApiPost('/api/session/update', { session_id: sid, workspace: workspace });
-      toast('Session workspace set to project workspace');
-      scheduleRefresh({ delayMs: 100 });
+      await apiPost('/api/session/rename', { session_id: s.session_id, title });
+      syncOpenTitle(s.session_id, title);
+      requestRefresh(100);
     } catch (err) {
-      toast('Workspace update failed: ' + (err && err.message || err), 4000);
+      toast(L('pf_rename_failed', 'Rename failed') + ': ' + ((err && err.message) || err), 4000);
     }
   }
 
-  // Ask the local model for a title that matches what the conversation is
-  // actually about, then apply it via the stock rename API (same semantics as
-  // the core rename: manual title, protected from adaptive refresh).
   async function regenerateTitle(s) {
-    const row = scrollEl && scrollEl.querySelector('.pf-row[data-sid="' + CSS.escape(s.session_id) + '"] .pf-row-title');
-    const prevText = row ? row.textContent : null;
-    if (row) row.textContent = 'Renaming…';
+    if (state.titleBusy[s.session_id]) return;
+    state.titleBusy[s.session_id] = true;
+    state.lastHash = snapshotHash();
+    render();
+    // core's proxy gives up at ~10s; abort past that so a hung endpoint can
+    // never park the row in "Regenerating…" forever
+    let ctrl = null;
+    let timer = 0;
+    try { if (typeof AbortController === 'function') ctrl = new AbortController(); } catch (_) {}
+    if (ctrl) timer = setTimeout(() => { try { ctrl.abort(); } catch (_) {} }, 12000);
     try {
-      const data = await pfApiGet('/api/session?session_id=' + encodeURIComponent(s.session_id) + '&messages=1&resolve_model=0');
-      const raw = (data && data.session && data.session.messages) || [];
-      if (!raw.length) throw new Error('no messages in session');
-      // Pre-trim client-side: long chats serialize to >1MB of JSON, which the
-      // sidecar body cap rejects (and wastes LLM context anyway). Keep only
-      // user/assistant text, cap each message, then keep the most recent tail.
-      let budget = 9000;
-      const trimmed = [];
-      for (let i = raw.length - 1; i >= 0 && budget > 0; i--) {
-        const m = raw[i];
-        if (!m || (m.role !== 'user' && m.role !== 'assistant')) continue;
-        let c = m.content;
-        if (Array.isArray(c)) c = c.filter(p => p && p.type === 'text').map(p => p.text || '').join(' ');
-        c = String(c || '').replace(/\s+/g, ' ').trim();
-        if (!c) continue;
-        if (c.length > 400) c = c.slice(0, 400) + '…';
-        budget -= c.length;
-        trimmed.unshift({ role: m.role, content: c });
-      }
-      if (!trimmed.length) throw new Error('no text messages to summarize');
-      const res = await sidecarPost('/v1/generate-title', { messages: trimmed });
-      if (!res || !res.title) throw new Error((res && res.error) || 'no title returned');
-      await pfApiPost('/api/session/rename', { session_id: s.session_id, title: res.title });
-      toast('Title: ' + res.title);
-      scheduleRefresh({ delayMs: 100 });
+      const d = await pfFetch('/api/session/title/regenerate', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ session_id: s.session_id, prefer_latest: true }),
+        signal: ctrl ? ctrl.signal : undefined,
+      });
+      if (d && d.title) syncOpenTitle(s.session_id, d.title);
+      toast(d && d.title ? d.title : L('pf_title_regenerated', 'Title updated'));
     } catch (err) {
-      if (row && prevText !== null) row.textContent = prevText;
-      toast('Regenerate title failed: ' + (err && err.message || err), 5000);
+      const label = L('session_title_regenerate_failed', L('pf_regenerate_failed', 'Regenerate title failed'));
+      toast(label + ' ' + ((err && err.message) || err), 5000);
+    } finally {
+      if (timer) clearTimeout(timer);
+      delete state.titleBusy[s.session_id];
+      state.lastHash = snapshotHash();
+      render();
     }
   }
 
-  /* ── menus ──────────────────────────────────────────────────────────── */
-
-  let menuListeners = null; // { onDoc, onKey } of the currently open menu
-
-  function closeMenu() {
-    if (menuListeners) {
-      document.removeEventListener('mousedown', menuListeners.onDoc, true);
-      document.removeEventListener('keydown', menuListeners.onKey, true);
-      menuListeners = null;
+  async function archiveSession(s) {
+    try {
+      await apiPost('/api/session/archive', { session_id: s.session_id, archived: true });
+      toast(L('pf_archived_note', 'Archived — archived chats live in the classic sidebar'));
+      reopenNextAfter(s.session_id);
+      requestRefresh(100);
+    } catch (err) {
+      toast(L('session_archive', 'Archive') + ': ' + ((err && err.message) || err), 4000);
     }
-    const m = document.querySelector('.pf-menu');
-    if (m) m.remove();
   }
-  function openMenu(items, anchor, opts) {
-    closeMenu();
+
+  function deleteSession(s) {
+    const confirm = coreFn('showConfirmDialog');
+    const run = async () => {
+      try {
+        await apiPost('/api/session/delete', { session_id: s.session_id });
+        reopenNextAfter(s.session_id);
+        requestRefresh(100);
+      } catch (err) {
+        toast(L('pf_delete_failed', 'Delete failed') + ': ' + ((err && err.message) || err), 4000);
+      }
+    };
+    if (confirm) {
+      confirm({
+        title: L('session_delete', 'Delete conversation') + '…',
+        message: L('pf_cannot_undo', 'This cannot be undone.'),
+        danger: true,
+      }).then((ok) => { if (ok) void run(); }).catch(() => {});
+      return;
+    }
+    if (window.confirm('Delete this conversation? This cannot be undone.')) void run();
+  }
+
+  async function useProjectWorkspace(s, workspace) {
+    try {
+      await apiPost('/api/session/update', { session_id: s.session_id, workspace });
+      toast('OK — ' + workspace);
+      requestRefresh(100);
+    } catch (err) {
+      toast(L('pf_workspace_update_failed', 'Workspace update failed') + ': ' + ((err && err.message) || err), 4000);
+    }
+  }
+
+  /* ── menus ───────────────────────────────────────────────────────────── */
+
+  // Preferred path: core's own session-action menu builder (a11y, styling,
+  // keyboard). Fallback: an equivalent menu we own (role=menu, buttons,
+  // Escape/outside-click close, focus restore).
+  let ownMenu = null;
+  let ownMenuCleanup = null;
+
+  function closeOwnMenu() {
+    if (ownMenuCleanup) { try { ownMenuCleanup(); } catch (_) {} ownMenuCleanup = null; }
+    if (ownMenu) { try { ownMenu.remove(); } catch (_) {} ownMenu = null; }
+  }
+
+  function openOwnMenu(items, anchor, ariaLabel) {
+    closeOwnMenu();
+    const prevFocus = document.activeElement;
     const menu = el('div', 'pf-menu');
-    menu.style.zIndex = '100000';
+    menu.setAttribute('role', 'menu');
+    if (ariaLabel) menu.setAttribute('aria-label', ariaLabel);
     for (const it of items) {
-      if (it === null) {
-        menu.appendChild(el('div', 'pf-menu-sep'));
-        continue;
-      }
-      if (!it.action) {
-        menu.appendChild(el('div', 'pf-menu-label', it.label));
-        continue;
-      }
+      if (it.separator) { menu.appendChild(el('div', 'pf-menu-sep')); continue; }
       const b = el('button', 'pf-menu-item' + (it.danger ? ' pf-menu-danger' : ''), it.label);
       b.type = 'button';
-      if (it.disabled) b.disabled = true;
-      b.onclick = () => { closeMenu(); it.action && it.action(); };
+      b.setAttribute('role', 'menuitem');
+      if (it.disabled) { b.disabled = true; }
+      else b.addEventListener('click', () => { closeOwnMenu(); void it.action(); });
       menu.appendChild(b);
     }
     document.body.appendChild(menu);
     const r = anchor.getBoundingClientRect();
     const mw = menu.offsetWidth || 220;
-    let x = r.right + ((opts && opts.x) || 4);
-    if (x + mw > window.innerWidth - 8) x = r.left - mw - 4;
-    let y = r.top;
-    const mh = menu.offsetHeight || 100;
-    if (y + mh > window.innerHeight - 8) y = Math.max(8, window.innerHeight - mh - 8);
-    menu.style.left = Math.max(8, x) + 'px';
+    let x = r.right - mw;
+    if (x < 8) x = 8;
+    let y = r.bottom + 4;
+    const mh = menu.offsetHeight || 120;
+    if (y + mh > window.innerHeight - 8) y = Math.max(8, r.top - mh - 4);
+    menu.style.left = x + 'px';
     menu.style.top = y + 'px';
-    // Central listener registry: closeMenu() always removes the current menu's
-    // document listeners, so a closed menu can never close a newly opened one.
-    const onDoc = (e) => {
-      if (!menu.contains(e.target)) closeMenu();
-    };
-    const onKey = (e) => { if (e.key === 'Escape') onDoc({ target: document.body }); };
-    menuListeners = { onDoc, onKey };
+    ownMenu = menu;
+    const onDoc = (e) => { if (!menu.contains(e.target)) closeOwnMenu(); };
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeOwnMenu(); } };
+    const onScroll = () => closeOwnMenu();
     document.addEventListener('mousedown', onDoc, true);
     document.addEventListener('keydown', onKey, true);
+    window.addEventListener('scroll', onScroll, true);
+    ownMenuCleanup = () => {
+      document.removeEventListener('mousedown', onDoc, true);
+      document.removeEventListener('keydown', onKey, true);
+      window.removeEventListener('scroll', onScroll, true);
+      try { if (prevFocus && prevFocus.focus) prevFocus.focus({ preventScroll: true }); } catch (_) {}
+    };
+    try {
+      const first = menu.querySelector('.pf-menu-item:not([disabled])');
+      if (first) first.focus({ preventScroll: true });
+    } catch (_) {}
   }
 
-  function rowMenuItems(s, project) {
+  function openMenu(items, anchor, ariaLabel) {
+    const build = coreFn('_buildSessionAction');
+    const mount = coreFn('_mountSessionActionMenu');
+    const closeCore = coreFn('closeSessionActionMenu');
+    if (build && mount) {
+      const menu = document.createElement('div');
+      menu.className = 'session-action-menu';
+      menu.id = 'pf-action-menu-' + (++menuSeq);
+      menu.setAttribute('role', 'menu');
+      if (ariaLabel) menu.setAttribute('aria-label', ariaLabel);
+      let iconSet = null;
+      try {
+        /* eslint-disable-next-line no-undef */
+        iconSet = (typeof ICONS === 'object' && ICONS) ? ICONS : null;
+      } catch (_) { iconSet = null; }
+      for (const it of items) {
+        if (it.separator) { menu.appendChild(el('div', 'pf-menu-sep')); continue; }
+        const icon = (it.icon && iconSet && iconSet[it.icon]) || '';
+        const action = build(it.label, it.meta || '', icon, async () => {
+          if (closeCore) { try { closeCore({ restoreFocus: false }); } catch (_) {} }
+          void it.action();
+        }, it.danger ? 'session-action-danger' : '');
+        if (it.disabled) {
+          action.disabled = true;
+        }
+        menu.appendChild(action);
+      }
+      mount(menu, { session_id: 'pf-menu-' + menuSeq }, anchor);
+      return;
+    }
+    openOwnMenu(items, anchor, ariaLabel);
+  }
+
+  function rowMenuItems(s) {
     const items = [];
-    const projects = state.projects;
-    if (!s.read_only) {
-      if (projects.length) {
-        items.push({ label: 'Move to…' });
-        for (const p of projects) {
-          const cur = s.project_id === p.project_id;
-          items.push({
-            label: (cur ? '✓ ' : '    ') + p.name,
-            disabled: cur,
-            action: () => void moveSession(s.session_id, p.project_id),
-          });
-        }
-        if (s.project_id) {
-          items.push({
-            label: '    No project (Unassigned)',
-            action: () => void moveSession(s.session_id, null),
-          });
-        }
-      }
-      items.push(null);
-      const binding = project ? state.bindings[project.project_id] : null;
-      if (binding && s.workspace && s.workspace !== binding.workspace) {
-        items.push({
-          label: 'Use project workspace',
-          action: () => {
-            askConfirm(
-              'Use project workspace?',
-              'This changes the working directory of this session to ' + binding.workspace +
-              '. Tool calls (terminal, file tools) will run there from the next turn.',
-              () => void useProjectWorkspace(s.session_id, binding.workspace),
-            );
-          },
-        });
-      }
+    if (isReadOnlySession(s)) {
+      items.push({ label: L('pf_read_only_session', 'Read-only session (imported)'), disabled: true, action: () => {} });
+      return items;
+    }
+    const moveMeta = L('session_move_project', 'Move to project');
+    for (const p of state.projects) {
+      const cur = s.project_id === p.project_id;
       items.push({
-        label: 'Rename…',
-        action: () => askPrompt('Rename conversation', s.title || '', (v) => {
-          if (!v) return;
-          void pfApiPost('/api/session/rename', { session_id: s.session_id, title: v })
-            .then(() => scheduleRefresh({ delayMs: 100 }))
-            .catch((e) => toast('Rename failed: ' + e.message, 4000));
-        }),
+        label: (cur ? '✓ ' : '') + p.name,
+        meta: moveMeta,
+        icon: 'folder',
+        disabled: cur,
+        action: () => void moveSession(s.session_id, p.project_id),
       });
+    }
+    if (s.project_id) {
       items.push({
-        label: 'Regenerate title from context',
-        action: () => void regenerateTitle(s),
+        label: L('pf_no_project_filter', 'No project (Unassigned)'),
+        meta: moveMeta,
+        icon: 'folder',
+        action: () => void moveSession(s.session_id, null),
       });
+    }
+    if (state.projects.length || s.project_id) items.push({ separator: true });
+    items.push({
+      label: L('session_rename', 'Rename') + '…',
+      icon: 'edit',
+      action: () => {
+        const prompt = coreFn('showPromptDialog');
+        if (prompt) {
+          prompt({ title: L('session_rename', 'Rename'), value: s.title || '', selectAll: true })
+            .then((v) => { if (v && v.trim()) void renameSession(s, v.trim()); })
+            .catch(() => {});
+          return;
+        }
+        const v = window.prompt(L('session_rename', 'Rename'), s.title || '');
+        if (v && v.trim()) void renameSession(s, v.trim());
+      },
+    });
+    items.push({
+      label: L('session_title_regenerate', 'Regenerate title'),
+      meta: L('session_title_regenerate_desc', 'Generate a new title from the conversation'),
+      icon: 'spark',
+      action: () => void regenerateTitle(s),
+    });
+    // explicit "use project workspace" (moving a session never rewrites its
+    // workspace implicitly; this is the deliberate version)
+    const proj = s.project_id ? findProject(s.project_id) : null;
+    const bindings = proj ? projectBindings(proj) : {};
+    if (bindings.workspace && s.workspace && s.workspace !== bindings.workspace) {
       items.push({
-        label: s.archived ? 'Unarchive' : 'Archive',
+        label: L('pf_use_project_workspace', 'Use project workspace'),
+        meta: bindings.workspace,
+        icon: 'folder',
         action: () => {
-          void pfApiPost('/api/session/archive', { session_id: s.session_id, archived: !s.archived })
-            .then(() => scheduleRefresh({ delayMs: 100 }))
-            .catch((e) => toast('Archive failed: ' + e.message, 4000));
+          const confirm = coreFn('showConfirmDialog');
+          if (confirm) {
+            confirm({
+              title: L('pf_use_project_workspace', 'Use project workspace'),
+              message: 'Change this session\'s working directory to ' + bindings.workspace + '?',
+              danger: true,
+            }).then((ok) => { if (ok) void useProjectWorkspace(s, bindings.workspace); }).catch(() => {});
+            return;
+          }
+          void useProjectWorkspace(s, bindings.workspace);
         },
       });
-      items.push({
-        label: 'Delete…',
-        danger: true,
-        action: () => askConfirm('Delete this conversation?', 'This cannot be undone.', () => {
-          void pfApiPost('/api/session/delete', { session_id: s.session_id })
-            .then(() => scheduleRefresh({ delayMs: 100 }))
-            .catch((e) => toast('Delete failed: ' + e.message, 4000));
-        }),
-      });
-    } else {
-      items.push({ label: 'Read-only session (imported)', disabled: true });
     }
+    items.push({ separator: true });
+    items.push({
+      label: L('session_archive', 'Archive'),
+      icon: 'archive',
+      action: () => void archiveSession(s),
+    });
+    items.push({
+      label: L('session_delete', 'Delete') + '…',
+      icon: 'trash',
+      danger: true,
+      action: () => deleteSession(s),
+    });
     return items;
   }
 
-  function projectMenuItems(project) {
-    const binding = state.bindings[project.project_id];
+  function openRowMenu(sid, anchor) {
+    const s = state.sessions.find((x) => x.session_id === sid);
+    if (!s) return;
+    openMenu(rowMenuItems(s), anchor, L('pf_conversation_actions', 'Conversation actions'));
+  }
+
+  function openProjectMenu(pid, anchor) {
+    const project = findProject(pid);
+    if (!project) return;
+    const bindings = projectBindings(project);
     const items = [
-      { label: 'New chat here', action: () => void newChatInProject(project.project_id) },
-      null,
+      {
+        label: '+ ' + L('pf_new_chat_here', 'New chat here'),
+        action: () => void newChatInProject(pid),
+      },
+      { separator: true },
+      {
+        label: bindings.workspace
+          ? L('pf_change_workspace', 'Change workspace…')
+          : L('pf_set_workspace', 'Set workspace…'),
+        meta: bindings.workspace || '',
+        icon: 'folder',
+        action: () => openWorkspacePrompt(project),
+      },
     ];
-    if (state.sidecarOk === false) {
+    if (bindings.workspace) {
       items.push({
-        label: '⚠ WebUI auth required for workspace features',
-        disabled: true,
-      }, null);
+        label: L('pf_unbind_workspace', 'Unbind workspace'),
+        action: () => void bindWorkspace(project, null),
+      });
     }
-    items.push(
-      {
-        label: binding ? 'Change workspace…' : 'Set workspace…',
-        action: () => openWorkspaceDialog(project),
-      },
-      {
-        label: 'Project instructions (HERMES.md)…',
-        disabled: !binding,
-        action: () => openHermesMdDialog(project),
-      },
-      null,
-      {
-        label: 'Rename project…',
-        action: () => askPrompt('Rename project', project.name, (v) => {
-          if (!v || v === project.name) return;
-          void pfApiPost('/api/projects/rename', { project_id: project.project_id, name: v })
-            .then(() => scheduleRefresh({ delayMs: 100 }))
-            .catch((e) => toast('Rename failed: ' + e.message, 4000));
-        }),
-      },
-      {
-        label: 'Delete project…',
-        danger: true,
-        action: () => askConfirm(
-          'Delete project “' + project.name + '”?',
-          'The project is removed and its conversations become Unassigned. The workspace files are not touched.',
-          () => {
-            void pfApiPost('/api/projects/delete', { project_id: project.project_id })
-              .then(() => scheduleRefresh({ delayMs: 100 }))
-              .catch((e) => toast('Delete failed: ' + e.message, 4000));
-          },
-        ),
-      },
-    );
-    return items;
+    items.push({
+      label: L('pf_hermes_md', 'Project instructions (HERMES.md)…'),
+      meta: bindings.workspace
+        ? (hermesMdSession(project) ? bindings.workspace + '/HERMES.md' : L('pf_hermes_md_no_session', 'Open or create a chat in the project workspace first.'))
+        : L('pf_set_workspace', 'Set workspace…'),
+      icon: 'edit',
+      disabled: !bindings.workspace || !hermesMdSession(project),
+      action: () => openHermesMdDialog(project),
+    });
+    items.push({ separator: true });
+    items.push({
+      label: L('pf_project_rename', 'Rename project…'),
+      icon: 'edit',
+      action: () => renameProject(project),
+    });
+    items.push({
+      label: L('pf_project_delete', 'Delete project…'),
+      icon: 'trash',
+      danger: true,
+      action: () => deleteProject(project),
+    });
+    openMenu(items, anchor, L('pf_project_actions', 'Project actions'));
   }
 
-  /* ── dialogs ────────────────────────────────────────────────────────── */
+  /* ── project / workspace actions (core-owned state via core APIs) ───── */
 
-  function openDialog({ title, bodyNode, onMount, width }) {
-    closeDialog();
+  async function bindWorkspace(project, workspace) {
+    try {
+      if (workspace === null) {
+        await apiPost('/api/projects/bind', { project_id: project.project_id, workspaces: null });
+        toast(L('pf_workspace_unbound', 'Workspace unbound'));
+      } else {
+        await apiPost('/api/projects/bind', { project_id: project.project_id, default_workspace: workspace });
+        toast(L('pf_workspace_bound', 'Workspace bound'));
+      }
+      requestRefresh(100);
+    } catch (err) {
+      toast(L('pf_bind_failed', 'Workspace bind failed') + ': ' + ((err && err.message) || err), 5000);
+    }
+  }
+
+  function openWorkspacePrompt(project) {
+    const prompt = coreFn('showPromptDialog');
+    const current = projectBindings(project).workspace || '';
+    const run = (v) => {
+      if (v == null) return;
+      const path = String(v).trim();
+      if (!path) return;
+      void bindWorkspace(project, path);
+    };
+    if (prompt) {
+      prompt({
+        title: (current ? L('pf_change_workspace', 'Change workspace…') : L('pf_set_workspace', 'Set workspace…'))
+          + ' — ' + project.name,
+        message: 'New chats in this project start in this folder (validated by the WebUI server). Core-managed binding: shared with core\'s own project quick-create.',
+        value: current,
+        placeholder: '/path/to/project',
+      }).then(run).catch(() => {});
+      return;
+    }
+    const v = window.prompt('Workspace path for ' + project.name, current);
+    run(v);
+  }
+
+  function renameProject(project) {
+    const prompt = coreFn('showPromptDialog');
+    const run = async (v) => {
+      if (v == null) return;
+      const name = String(v).trim();
+      if (!name || name === project.name) return;
+      try {
+        await apiPost('/api/projects/rename', { project_id: project.project_id, name });
+        requestRefresh(100);
+      } catch (err) {
+        toast(L('pf_rename_failed', 'Rename failed') + ': ' + ((err && err.message) || err), 4000);
+      }
+    };
+    if (prompt) {
+      prompt({ title: L('pf_project_rename', 'Rename project…'), value: project.name, selectAll: true })
+        .then(run).catch(() => {});
+      return;
+    }
+    const v = window.prompt(L('pf_project_rename', 'Rename project…'), project.name);
+    void run(v);
+  }
+
+  function deleteProject(project) {
+    const confirm = coreFn('showConfirmDialog');
+    const run = async () => {
+      try {
+        await apiPost('/api/projects/delete', { project_id: project.project_id });
+        requestRefresh(100);
+      } catch (err) {
+        toast(L('pf_delete_failed', 'Delete failed') + ': ' + ((err && err.message) || err), 4000);
+      }
+    };
+    if (confirm) {
+      confirm({
+        title: L('pf_project_delete', 'Delete project…'),
+        message: 'Conversations become Unassigned; workspace files are untouched.',
+        danger: true,
+      }).then((ok) => { if (ok) void run(); }).catch(() => {});
+      return;
+    }
+    if (window.confirm('Delete project ' + project.name + '?')) void run();
+  }
+
+  /* ── HERMES.md via core file API ─────────────────────────────────────── */
+
+  function hermesMdSession(project) {
+    // core's file API is session-scoped; pick a visible non-read-only session
+    // whose workspace is the project's bound workspace (prefer same project).
+    const ws = projectBindings(project).workspace;
+    if (!ws) return null;
+    let best = null;
+    for (const s of state.sessions) {
+      if (isReadOnlySession(s) || s.workspace !== ws) continue;
+      if (!best) best = s;
+      if (s.project_id === project.project_id) { best = s; break; }
+    }
+    return best;
+  }
+
+  let mdDialog = null;
+
+  function closeMdDialog() {
+    if (!mdDialog) return;
+    const prev = mdDialog.prevFocus;
+    try {
+      document.removeEventListener('keydown', mdDialog.onKey, true);
+      mdDialog.overlay.remove();
+    } catch (_) {}
+    mdDialog = null;
+    try { if (prev && prev.focus) prev.focus({ preventScroll: true }); } catch (_) {}
+  }
+
+  function openHermesMdDialog(project) {
+    if (mdDialog) closeMdDialog();
+    const s = hermesMdSession(project);
+    const ws = projectBindings(project).workspace;
+    if (!s || !ws) { toast(L('pf_hermes_md_no_session', 'Open a chat in the project workspace first.')); return; }
+    const prevFocus = document.activeElement;
     const overlay = el('div', 'pf-overlay');
-    overlay.id = 'pf-dialog-overlay';
     const dlg = el('div', 'pf-dialog');
-    dlg.style.maxWidth = (width || 480) + 'px';
+    dlg.setAttribute('role', 'dialog');
+    dlg.setAttribute('aria-modal', 'true');
+    dlg.setAttribute('aria-label', L('pf_hermes_md', 'Project instructions (HERMES.md)…'));
     const head = el('div', 'pf-dialog-head');
-    const t = el('div', 'pf-dialog-title', title);
-    head.appendChild(t);
+    head.appendChild(el('div', 'pf-dialog-title', 'HERMES.md — ' + project.name));
     const x = el('button', 'pf-dialog-x', '×');
     x.type = 'button';
-    x.onclick = closeDialog;
+    x.addEventListener('click', closeMdDialog);
     head.appendChild(x);
-    dlg.appendChild(head);
-    const body = el('div', 'pf-dialog-body');
-    body.appendChild(bodyNode);
-    dlg.appendChild(body);
-    overlay.appendChild(dlg);
-    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeDialog(); });
-    document.body.appendChild(overlay);
-    if (onMount) onMount(dlg);
-    return overlay;
-  }
-  function closeDialog() {
-    const o = document.getElementById('pf-dialog-overlay');
-    if (o) o.remove();
-  }
-
-  function askPrompt(title, current, onOk) {
-    const wrap = el('div');
-    const input = el('input', 'pf-input');
-    input.type = 'text';
-    input.value = current || '';
-    wrap.appendChild(input);
-    const err = el('div', 'pf-dialog-err');
-    wrap.appendChild(err);
-    const row = el('div', 'pf-dialog-actions');
-    const cancel = el('button', 'pf-btn', 'Cancel');
-    cancel.type = 'button';
-    cancel.onclick = closeDialog;
-    const ok = el('button', 'pf-btn pf-btn-primary', 'Save');
-    ok.type = 'button';
-    ok.onclick = () => {
-      const v = input.value.trim();
-      if (!v) { err.textContent = 'Name cannot be empty'; return; }
-      closeDialog();
-      onOk(v);
-    };
-    input.addEventListener('keydown', (e) => { if (e.key === 'Enter') ok.click(); });
-    row.appendChild(cancel);
-    row.appendChild(ok);
-    wrap.appendChild(row);
-    const ov = openDialog({ title, bodyNode: wrap });
-    setTimeout(() => { input.focus(); input.select(); }, 30);
-    void ov;
-  }
-
-  function askConfirm(title, message, onOk) {
-    const wrap = el('div');
-    wrap.appendChild(el('div', 'pf-dialog-text', message));
-    const row = el('div', 'pf-dialog-actions');
-    const cancel = el('button', 'pf-btn', 'Cancel');
-    cancel.type = 'button';
-    cancel.onclick = closeDialog;
-    const ok = el('button', 'pf-btn pf-btn-danger', 'Confirm');
-    ok.type = 'button';
-    ok.onclick = () => { closeDialog(); onOk(); };
-    row.appendChild(cancel);
-    row.appendChild(ok);
-    wrap.appendChild(row);
-    openDialog({ title, bodyNode: wrap });
-  }
-
-  function workspaceChoices() {
-    const set = new Set();
-    if (state.defaultWorkspace) set.add(state.defaultWorkspace);
-    for (const s of state.sessions) if (s.workspace) set.add(s.workspace);
-    for (const pid of Object.keys(state.bindings)) set.add(state.bindings[pid].workspace);
-    return Array.from(set).sort();
-  }
-
-  function openWorkspaceDialog(project) {
-    const wrap = el('div');
-    const hint = el('div', 'pf-dialog-text');
-    hint.textContent = 'Workspace is the folder the agent works in for new chats of this project. ' +
-      'Its HERMES.md is loaded into the agent context automatically.';
-    wrap.appendChild(hint);
-    const current = (state.bindings[project.project_id] || {}).workspace || '';
-    const input = el('input', 'pf-input');
-    input.type = 'text';
-    input.value = current;
-    input.placeholder = '~/projects/<name>';
-    input.setAttribute('list', 'pf-ws-list');
-    wrap.appendChild(input);
-    const dl = el('datalist', null);
-    dl.id = 'pf-ws-list';
-    for (const w of workspaceChoices()) {
-      const o = el('option');
-      o.value = w;
-      dl.appendChild(o);
-    }
-    wrap.appendChild(dl);
-    const err = el('div', 'pf-dialog-err');
-    wrap.appendChild(err);
-    const row = el('div', 'pf-dialog-actions');
-    const cancel = el('button', 'pf-btn', 'Cancel');
-    cancel.type = 'button';
-    cancel.onclick = closeDialog;
-    if (current) {
-      const unbind = el('button', 'pf-btn pf-btn-danger', 'Unbind');
-      unbind.type = 'button';
-      unbind.onclick = () => {
-        closeDialog();
-        void sidecarPost('/v1/bindings', { project_id: project.project_id, workspace: null })
-          .then(() => { toast('Workspace unbound'); scheduleRefresh({ delayMs: 100 }); })
-          .catch((e) => toast('Unbind failed: ' + e.message, 4000));
-      };
-      row.appendChild(unbind);
-    }
-    const save = el('button', 'pf-btn pf-btn-primary', 'Save');
-    save.type = 'button';
-    save.onclick = async () => {
-      const v = input.value.trim();
-      if (!v) { err.textContent = 'Workspace path is required'; return; }
-      err.textContent = '';
-      try {
-        await sidecarPost('/v1/bindings', { project_id: project.project_id, workspace: v });
-        closeDialog();
-        toast('Workspace saved');
-        scheduleRefresh({ delayMs: 100 });
-      } catch (e) {
-        err.textContent = e.message || String(e);
-      }
-    };
-    row.appendChild(cancel);
-    row.appendChild(save);
-    wrap.appendChild(row);
-    openDialog({ title: (current ? 'Change workspace — ' : 'Set workspace — ') + project.name, bodyNode: wrap, width: 560 });
-    setTimeout(() => input.focus(), 30);
-  }
-
-  async function openHermesMdDialog(project) {
-    const binding = state.bindings[project.project_id];
-    if (!binding) { toast('Set a workspace first'); return; }
-    const wrap = el('div');
-    const status = el('div', 'pf-dialog-text', 'Loading…');
-    wrap.appendChild(status);
+    const status = el('div', 'pf-dialog-text', '…');
     const ta = el('textarea', 'pf-textarea');
     ta.spellcheck = false;
-    ta.placeholder = '# Project\n\n…';
-    wrap.appendChild(ta);
+    ta.disabled = true;
     const err = el('div', 'pf-dialog-err');
-    wrap.appendChild(err);
     const row = el('div', 'pf-dialog-actions');
-    const cancel = el('button', 'pf-btn', 'Cancel');
-    cancel.type = 'button';
-    cancel.onclick = closeDialog;
     const save = el('button', 'pf-btn pf-btn-primary', 'Save');
     save.type = 'button';
-    save.onclick = async () => {
+    save.disabled = true;
+    save.addEventListener('click', async () => {
+      save.disabled = true;
       try {
-        await sidecarPut('/v1/hermes-md?workspace=' + encodeURIComponent(binding.workspace), { content: ta.value });
+        await apiPost('/api/file/save', { session_id: s.session_id, path: 'HERMES.md', content: ta.value });
         toast('HERMES.md saved');
-        closeDialog();
+        closeMdDialog();
       } catch (e) {
-        err.textContent = e.message || String(e);
+        err.textContent = (e && e.message) || String(e);
+        save.disabled = false;
       }
-    };
+    });
+    const cancel = el('button', 'pf-btn', L('cancel', 'Cancel'));
+    cancel.type = 'button';
+    cancel.addEventListener('click', closeMdDialog);
     row.appendChild(cancel);
     row.appendChild(save);
-    wrap.appendChild(row);
-    openDialog({ title: 'Project instructions — ' + project.name, bodyNode: wrap, width: 720 });
-    try {
-      const d = await sidecarGet('/v1/hermes-md?workspace=' + encodeURIComponent(binding.workspace));
-      if (d && d.exists) {
-        ta.value = d.content;
-        status.textContent = 'HERMES.md · ' + (d.size || 0) + ' bytes · ' + (d.path || '');
-      } else if (d && d.error) {
-        status.textContent = d.error;
-      } else {
-        status.textContent = 'No HERMES.md yet — a template will be created on first save.';
-        try {
-          const t = await sidecarGet('/v1/template');
-          ta.value = t.template;
-        } catch (_) { ta.value = '# Project\n\n'; }
+    dlg.appendChild(head);
+    dlg.appendChild(status);
+    dlg.appendChild(ta);
+    dlg.appendChild(err);
+    dlg.appendChild(row);
+    overlay.appendChild(dlg);
+    overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeMdDialog(); });
+    const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeMdDialog(); } };
+    document.addEventListener('keydown', onKey, true);
+    // lightweight Tab containment: aria-modal without a trap is a lie
+    dlg.addEventListener('keydown', (e) => {
+      if (e.key !== 'Tab') return;
+      let focusables = [];
+      try {
+        focusables = Array.prototype.filter.call(
+          dlg.querySelectorAll('button, textarea, input, [href]'),
+          (n) => !n.disabled
+        );
+      } catch (_) { return; }
+      if (!focusables.length) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      const active = document.activeElement;
+      if (e.shiftKey && (active === first || !dlg.contains(active))) {
+        e.preventDefault(); last.focus();
+      } else if (!e.shiftKey && active === last) {
+        e.preventDefault(); first.focus();
       }
-    } catch (e) {
-      status.textContent = 'Failed to load: ' + (e.message || e);
-    }
+    });
+    document.body.appendChild(overlay);
+    mdDialog = { overlay, onKey, prevFocus };
+    try { ta.focus(); } catch (_) {}
+
+    // Save stays disabled until a successful read (or a confirmed
+    // "no file yet") so a failed load can never blank an existing file.
+    void (async () => {
+      try {
+        const d = await apiGet('/api/file?session_id=' + encodeURIComponent(s.session_id) + '&path=' + encodeURIComponent('HERMES.md'));
+        ta.value = (d && typeof d.content === 'string') ? d.content : '';
+        ta.disabled = false;
+        save.disabled = false;
+        status.textContent = 'HERMES.md · ' + (d && d.size != null ? d.size : ta.value.length) + ' bytes · ' + ws + '/HERMES.md';
+      } catch (e) {
+        ta.disabled = true;
+        save.disabled = true;
+        if (e && e.status === 404) {
+          status.textContent = L('pf_hermes_md_missing', 'No HERMES.md yet.');
+        } else {
+          status.textContent = L('pf_failed_to_load', 'Failed to load') + ': ' + ((e && e.message) || e);
+        }
+      }
+    })();
   }
 
-  /* ── boot ───────────────────────────────────────────────────────────── */
+  /* ── boot ────────────────────────────────────────────────────────────── */
 
   function boot() {
     if (state.ready) return;
     state.ready = true;
     state.collapsed = lsGetObj(LS.collapse, {});
-    initStorage();
+    state.mode = lsGet(LS.mode, 'folders') === 'classic' ? 'classic' : 'folders';
     checkCompatibility();
     try {
       buildDom();
     } catch (err) {
-      console.error('[project-folders] DOM init failed; staying out of the way', err);
+      console.error('[' + EXT_ID + '] DOM init failed; staying out of the way', err);
       state.ready = false;
       return;
     }
     applyMode();
-    void refresh({});
+    void runRefresh();
   }
 
   if (document.readyState === 'loading') {
@@ -1147,4 +1640,15 @@
   } else {
     setTimeout(boot, 0);
   }
+
+  // Minimal, read-mostly test/debug surface (no side effects on load).
+  window.__PF__ = {
+    state,
+    runRefresh,
+    requestRefresh,
+    render,
+    newChatInProject,
+    openSessionRow,
+    snapshotHash,
+  };
 })();
