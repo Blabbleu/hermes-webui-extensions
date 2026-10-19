@@ -56,7 +56,8 @@
         "/api/projects/delete",
         "/api/file/save",
         "/api/session/import_cli",
-        "/api/profile/switch"
+        "/api/profile/switch",
+        "/api/session/draft"
       ]
     },
     "webui_navigation": true,
@@ -73,8 +74,16 @@
         "hermes-webui-session",
         "hermes-new-chat-draft-session",
         "hermes-session-viewed-counts",
+        "hermes-session-viewed-counts:deleted:v1:*",
         "hermes-session-completion-unread",
-        "hermes-session-completion-unread-cleared"
+        "hermes-session-completion-unread-cleared",
+        "hermes-session-completion-unread-cleared:v1:*",
+        "hermes-session-observed-streaming",
+        "hermes-queue-*",
+        "handoff:*",
+        "hermes-webui-model",
+        "hermes-webui-model-state",
+        "hermes-webui-inflight-state"
       ]
     },
     "loopback_sidecar": false,

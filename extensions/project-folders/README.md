@@ -41,10 +41,11 @@ Toggle it with the **folder icon next to the "+"** in the Chat panel header
   chat, including the empty state after the last one. Archiving the open chat
   moves the UI to the most recent remaining conversation. Rendered with core's
   own session-action menu builder when available (a11y + styling parity).
-- **Project menu (⚙)** — New chat here, Set/Change/Unbind workspace via
+- **Project menu (⚙)** — Set/Change/Unbind workspace via
   **core's** `POST /api/projects/bind` (the binding is core project state —
   shared with core's quick-create and visible to `/api/projects`),
-  Project instructions (HERMES.md), Rename project, Delete project.
+  Project instructions (HERMES.md), Rename project, Delete project. (New
+  chats come from the folder header's "+".)
 - **HERMES.md** — read via `GET /api/file` and saved via
   `POST /api/file/save` against a session in the project's bound workspace,
   using the same absolute `<workspace>/HERMES.md` path for both calls, so a
@@ -121,11 +122,15 @@ Folders mode replaces only the **list**; the classic sidebar keeps owning:
   switching a chat's workspace run through core's own helpers, so core's
   normal side effects happen on the extension's behalf: `POST
   /api/session/import_cli` (opening a CLI session), `POST /api/profile/switch`
-  (opening another profile's chat while all-profiles is on), `GET /api/list`
-  (file-tree refresh after a workspace switch), and core's own localStorage
-  keys for the open-session pointer, new-chat draft, viewed counts and
-  completion-unread state. These are listed in `extension.json`
-  (`webui_api`, `storage.shared_webui_keys`).
+  (opening another profile's chat while all-profiles is on), `POST
+  /api/session/draft` (core saves the outgoing chat's composer draft when you
+  switch), `GET /api/list` (file-tree refresh after a workspace switch), and
+  core's own localStorage keys: the open-session pointer, new-chat draft,
+  viewed and completion-unread state, observed-streaming state, per-session
+  queue (`hermes-queue-*`) and handoff (`handoff:*`) entries that core's
+  delete clears, and core's model/in-flight state. These are listed in
+  `extension.json` (`webui_api`, `storage.shared_webui_keys`; `*` marks a key
+  family).
 - Labels route through core's `t()` i18n with English fallbacks.
 
 ## Install / disable / uninstall

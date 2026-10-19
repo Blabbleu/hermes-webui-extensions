@@ -98,7 +98,7 @@
     pf_set_workspace: 'Set workspace…',
     pf_change_workspace: 'Change workspace…',
     pf_unbind_workspace: 'Unbind workspace',
-    pf_hermes_md: 'Project instructions (HERMES.md)…',
+    pf_hermes_md: 'Project instructions…',
     pf_project_rename: 'Rename project…',
     pf_project_delete: 'Delete project…',
     pf_no_project_filter: 'No project (Unassigned)',
@@ -137,7 +137,10 @@
     pf_incompatible_hint: 'Switch to the classic sidebar (folder icon in the Chat panel header) to keep using the standard list.',
     pf_hermes_md_no_workspace: 'Set a workspace for this project first.',
     pf_hermes_md_saved: 'HERMES.md saved',
+    pf_failed_to_save: 'HERMES.md save failed',
     pf_save: 'Save',
+    pf_bytes: '{0} bytes',
+    pf_now: 'now',
     pf_loading_file: 'Loading…',
     pf_close: 'Close',
   };
@@ -226,7 +229,7 @@
     if (!ts) return '';
     const d = Date.now() / 1000 - Number(ts);
     if (!isFinite(d) || d < 0) return '';
-    if (d < 60) return 'now';
+    if (d < 60) return L('pf_now', 'now');
     if (d < 3600) return Math.floor(d / 60) + 'm';
     if (d < 86400) return Math.floor(d / 3600) + 'h';
     if (d < 7 * 86400) return Math.floor(d / 86400) + 'd';
@@ -667,6 +670,7 @@
   function isFocusableNow(n) {
     try {
       if (!n || !n.isConnected || n.disabled || typeof n.focus !== 'function') return false;
+      if (n === document.body || n === document.documentElement) return false;
       const cs = getComputedStyle(n);
       return cs.visibility !== 'hidden' && cs.display !== 'none';
     } catch (_) { return false; }
@@ -1154,7 +1158,11 @@
       try {
         const reusable = coreFn('_currentSessionIsReusableEmptyChat');
         const cur = coreS();
-        const curProject = cur && cur.session ? cur.session.project_id : null;
+        const curSid = cur && cur.session ? cur.session.session_id : null;
+        // Fail safe: reuse only when neither core's open-session record nor
+        // the freshest list row puts the empty chat in a project.
+        const rec = curSid ? state.sessions.find((x) => x.session_id === curSid) : null;
+        const curProject = (cur && cur.session && cur.session.project_id) || (rec && rec.project_id) || null;
         if (reusable && reusable() && !curProject) {
           const closeDrawer = coreFn('closeMobileSidebar');
           if (closeDrawer) { try { closeDrawer(); } catch (_) {} }
@@ -1198,6 +1206,17 @@
   async function moveSession(sid, projectId) {
     try {
       await apiPost('/api/session/move', { session_id: sid, project_id: projectId || null });
+      // keep core's open-session record in step (core's own move path does
+      // the same for its cache); the reuse guard and project-scoped core UI
+      // read S.session.project_id
+      try {
+        const cur = coreS();
+        if (cur && cur.session && cur.session.session_id === sid) cur.session.project_id = projectId || null;
+      } catch (_) {}
+      try {
+        const row = state.sessions.find((x) => x.session_id === sid);
+        if (row) row.project_id = projectId || null;
+      } catch (_) {}
       toast(projectId ? L('pf_moved_to_project', 'Moved to project') : L('pf_removed_from_project', 'Removed from project'));
       requestRefresh(100);
     } catch (err) {
@@ -1342,6 +1361,7 @@
     menu.style.left = x + 'px';
     menu.style.top = y + 'px';
     ownMenu = menu;
+    const ident = anchorIdentity(anchor);
     const onDoc = (e) => { if (!menu.contains(e.target)) closeOwnMenu(); };
     const onKey = (e) => { if (e.key === 'Escape') { e.stopPropagation(); closeOwnMenu(); } };
     const onScroll = () => closeOwnMenu();
@@ -1352,8 +1372,14 @@
       document.removeEventListener('mousedown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('scroll', onScroll, true);
-      const back = (anchor && anchor.isConnected) ? anchor : prevFocus;
-      try { if (back && back.focus) back.focus({ preventScroll: true }); } catch (_) {}
+      if (isFocusableNow(anchor)) {
+        try { anchor.focus({ preventScroll: true }); return; } catch (_) {}
+      }
+      if (isFocusableNow(prevFocus)) {
+        try { prevFocus.focus({ preventScroll: true }); return; } catch (_) {}
+      }
+      // focus is still inside the menu being removed: force the re-home
+      restoreFocusNear(null, ident, true);
     };
     try {
       const first = menu.querySelector('.pf-menu-item:not([disabled])');
@@ -1363,6 +1389,51 @@
 
   let coreMenuEl = null;
   let coreMenuAnchor = null;
+  function anchorIdentity(anchor) {
+    let key = null;
+    let group = null;
+    try {
+      key = anchor && anchor.getAttribute ? anchor.getAttribute('data-pfk') : null;
+      const g = anchor && anchor.closest ? anchor.closest('.pf-group') : null;
+      group = g ? g.dataset.key : null;
+    } catch (_) {}
+    return { key, group };
+  }
+  // Put focus back near a menu's trigger: the trigger itself, its rebuilt
+  // replacement (same data-pfk), its folder header, then the header toggle.
+  function restoreFocusNear(anchor, ident, force) {
+    if (!force) {
+      try {
+        const a = document.activeElement;
+        if (a && a !== document.body && a !== document.documentElement && a.isConnected) return;
+      } catch (_) { return; }
+    }
+    if (isFocusableNow(anchor)) {
+      try { anchor.focus({ preventScroll: true }); if (document.activeElement === anchor) return; } catch (_) {}
+    }
+    if (ident && ident.key && focusPfk(ident.key)) return;
+    if (ident && ident.group && focusPfk('g:' + ident.group)) return;
+    try {
+      const tog = document.getElementById('pf-mode-toggle');
+      if (isFocusableNow(tog)) tog.focus({ preventScroll: true });
+    } catch (_) {}
+  }
+  // Core closes its menu on Escape, outside clicks, scrolls outside its own
+  // list, and actions; only some of those restore focus, and none can find a
+  // trigger that a refresh rebuilt. Watch the menu's removal and, if focus
+  // was left on <body>, re-home it (synchronously, as a microtask, so no
+  // later key event can reach core's Enter-approves shortcut first).
+  function watchCoreMenuTeardown(menu, anchor) {
+    const ident = anchorIdentity(anchor);
+    try {
+      const obs = new MutationObserver(() => {
+        if (menu.isConnected) return;
+        obs.disconnect();
+        restoreFocusNear(anchor, ident);
+      });
+      obs.observe(document.body, { childList: true });
+    } catch (_) {}
+  }
   function openMenu(items, anchor, ariaLabel) {
     const build = coreFn('_buildSessionAction');
     const mount = coreFn('_mountSessionActionMenu');
@@ -1412,6 +1483,7 @@
       mount(menu, { session_id: 'pf-menu-' + menuSeq }, anchor);
       coreMenuEl = menu;
       coreMenuAnchor = anchor;
+      watchCoreMenuTeardown(menu, anchor);
       return;
     }
     openOwnMenu(items, anchor, ariaLabel);
@@ -1513,11 +1585,6 @@
     if (!project) return;
     const bindings = projectBindings(project);
     const items = [
-      {
-        label: '+ ' + L('pf_new_chat_here', 'New chat here'),
-        action: () => void newChatInProject(pid),
-      },
-      { separator: true },
       {
         label: bindings.workspace
           ? L('pf_change_workspace', 'Change workspace…')
@@ -1725,18 +1792,26 @@
     save.addEventListener('click', async () => {
       if (saving || save.disabled) return;
       saving = true;
-      save.disabled = true;
+      // Never disable the focused button (that drops focus to <body>, where
+      // core treats Enter as "Allow once"); mark it busy and freeze the text.
+      save.setAttribute('aria-disabled', 'true');
+      ta.readOnly = true;
       err.textContent = '';
       try {
         await apiPost('/api/file/save', { session_id: s.session_id, path: mdPath, content: ta.value });
         toast(L('pf_hermes_md_saved', 'HERMES.md saved'));
-        closeMdDialog();
+        if (mdDialog === me) closeMdDialog(); // never close a newer dialog
       } catch (e) {
-        err.textContent = (e && e.message) || String(e);
-        save.disabled = false;
-        try { save.focus({ preventScroll: true }); } catch (_) {}
+        const msg = (e && e.message) || String(e);
+        if (mdDialog !== me) {
+          toast(L('pf_failed_to_save', 'HERMES.md save failed') + ': ' + msg, 5000);
+        } else {
+          err.textContent = msg;
+        }
       } finally {
         saving = false;
+        save.removeAttribute('aria-disabled');
+        ta.readOnly = false;
       }
     });
     const cancel = el('button', 'pf-btn', L('cancel', 'Cancel'));
@@ -1789,7 +1864,7 @@
         ta.value = (d && typeof d.content === 'string') ? d.content : '';
         ta.disabled = false;
         save.disabled = false;
-        status.textContent = 'HERMES.md · ' + (d && d.size != null ? d.size : ta.value.length) + ' bytes · ' + mdPath;
+        status.textContent = 'HERMES.md · ' + Lf('pf_bytes', '{0} bytes', (d && d.size != null ? d.size : ta.value.length)) + ' · ' + mdPath;
         try { ta.focus({ preventScroll: true }); } catch (_) {}
       } catch (e) {
         if (mdDialog !== me) return;

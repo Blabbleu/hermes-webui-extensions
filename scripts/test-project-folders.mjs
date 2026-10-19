@@ -108,6 +108,7 @@ function makeHarness({ projects = [], sessions = [], session = null, dialogs = n
     if (h.holdFetch) await h.holdFetch;
     if (opts && opts.method === 'POST') {
       h.posts.push({ url, body: JSON.parse(opts.body || '{}') });
+      if (h.holdPost) await h.holdPost;
       return { ok: true, status: 200, json: async () => ({ ok: true, session: { session_id: 'new-1' } }) };
     }
     if (h.failLists && (url.startsWith('/api/projects') || url.startsWith('/api/sessions'))) {
@@ -408,6 +409,20 @@ async function main() {
     check(!h.d.querySelector('body > .pf-menu'), 'Escape closes the fallback menu');
     h.close();
   }
+  {
+    // fallback menu whose trigger was rebuilt by a refresh: focus re-homes,
+    // never stays on <body>
+    const h = makeHarness({ projects: [{ project_id: 'p1', name: 'Alpha' }], sessions: [session('s1'), session('s2')] });
+    await boot(h);
+    h.rowFor('s1').querySelector('.pf-row-more').click();
+    h.setData(undefined, [session('s1', { project_id: 'p1' }), session('s2')]);
+    await h.refresh();
+    h.d.dispatchEvent(new h.w.KeyboardEvent('keydown', { key: 'Escape', bubbles: true }));
+    check(!h.d.querySelector('body > .pf-menu'), 'Escape closes the fallback menu after a refresh');
+    checkEqual(h.w.document.activeElement, h.rowFor('s1').querySelector('.pf-row-more'),
+      'fallback menu close re-homes focus to the rebuilt trigger');
+    h.close();
+  }
 
   // ── 11. header toggle switches modes and persists ─────────────────────
   {
@@ -622,6 +637,87 @@ async function main() {
     const txt = h.d.querySelector('.pf-dialog .pf-dialog-text').textContent;
     check(/Path traversal blocked/.test(txt) && !/No HERMES\.md/.test(txt), 'core refusals are not mislabeled as "no file yet"');
     checkEqual([...h.d.querySelectorAll('.pf-dialog .pf-btn')].find((b) => b.textContent === 'Save').disabled, true, 'Save stays disabled on any failed read');
+    h.close();
+  }
+
+  // ── 19b. saving keeps focus in the dialog; stale saves never close a newer one ──
+  {
+    const projects = [{ project_id: 'p1', name: 'Alpha', default_workspace: '/ws/alpha' },
+      { project_id: 'p2', name: 'Beta', default_workspace: '/ws/beta' }];
+    const sessions = [session('s1', { project_id: 'p1', workspace: '/ws/alpha' }), session('s2', { project_id: 'p2', workspace: '/ws/beta' })];
+    const h = makeHarness({ projects, sessions, coreMenu: true });
+    await boot(h);
+    const openMd = async (pid) => {
+      h.d.querySelector(`#pf-folders .pf-group[data-key="${pid}"] .pf-group-gear`).click();
+      [...h.mountedMenus[h.mountedMenus.length - 1].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md')).onclick({});
+      await tick(20);
+      return h.d.querySelector('.pf-dialog');
+    };
+    const dlgA = await openMd('p1');
+    let releaseA;
+    h.holdPost = new Promise((r) => { releaseA = r; });
+    const saveA = [...dlgA.querySelectorAll('.pf-btn')].find((b) => b.textContent === 'Save');
+    saveA.focus();
+    saveA.click();
+    await tick(5);
+    checkEqual(h.w.document.activeElement, saveA, 'a pending save keeps focus on Save (never <body>)');
+    checkEqual(saveA.getAttribute('aria-disabled'), 'true', 'Save is marked busy while the request runs');
+    check(dlgA.querySelector('.pf-textarea').readOnly, 'the editor is frozen while saving');
+    dlgA.querySelector('.pf-dialog-x').click(); // close A while its save is in flight
+    const dlgB = await openMd('p2');
+    dlgB.querySelector('.pf-textarea').value = '# unsaved B';
+    h.holdPost = null;
+    releaseA();
+    await tick(20);
+    check(dlgB.isConnected, "a late save from an older dialog does not close the newer one");
+    checkEqual(dlgB.querySelector('.pf-textarea').value, '# unsaved B', "the newer dialog keeps its unsaved text");
+    h.close();
+  }
+
+  // ── 19c. core menu teardown re-homes focus (scroll close, rebuilt trigger) ──
+  {
+    const projects = [{ project_id: 'p1', name: 'Alpha' }];
+    const sessions = [session('s1', { project_id: null }), session('s2', { project_id: null })];
+    const h = makeHarness({ projects, sessions, coreMenu: true });
+    await boot(h);
+    const trig = h.rowFor('s1').querySelector('.pf-row-more');
+    trig.click();
+    const m1 = h.mountedMenus[h.mountedMenus.length - 1];
+    m1.querySelector('button').focus();
+    m1.remove(); // e.g. core closing it on a scroll outside its own list, no restore
+    await tick(0);
+    checkEqual(h.w.document.activeElement, trig, 'a non-restoring menu close returns focus to the trigger');
+    // the trigger is rebuilt (row moved to another folder) while the menu is open
+    trig.click();
+    const m2 = h.mountedMenus[h.mountedMenus.length - 1];
+    m2.querySelector('button').focus();
+    h.setData(undefined, [session('s1', { project_id: 'p1' }), session('s2', { project_id: null })]);
+    await h.refresh();
+    check(!trig.isConnected, 'the original trigger was replaced by the reconcile');
+    m2.remove();
+    await tick(0);
+    checkEqual(h.w.document.activeElement, h.rowFor('s1').querySelector('.pf-row-more'), 'focus re-homes to the rebuilt trigger (same data-pfk)');
+    h.close();
+  }
+
+  // ── 19d. moving the open chat keeps core's record in step; reuse fails safe ──
+  {
+    const projects = [{ project_id: 'p1', name: 'Alpha' }];
+    const h = makeHarness({ projects, sessions: [session('s1', { project_id: 'p1' })], coreMenu: true });
+    h.w.S = { session: { session_id: 's1', project_id: 'p1' }, activeProfile: 'default' };
+    await boot(h);
+    h.rowFor('s1').querySelector('.pf-row-more').click();
+    [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Unassigned')).onclick({});
+    await tick(20);
+    checkEqual(h.w.S.session.project_id, null, 'moving the open chat updates S.session.project_id');
+    // stale core record says unassigned, fresh list row says p1 -> do not reuse
+    h.w._currentSessionIsReusableEmptyChat = () => true;
+    h.w.S = { session: { session_id: 'e1', project_id: null }, activeProfile: 'default' };
+    h.setData(undefined, [session('s1'), session('e1', { project_id: 'p1' })]);
+    await h.refresh();
+    h.d.querySelector('#pf-folders .pf-group[data-key="unassigned"] .pf-group-plus').click();
+    await tick(10);
+    checkEqual(h.newSessionCalls.length, 1, 'reuse is refused when the list row puts the empty chat in a project');
     h.close();
   }
 
