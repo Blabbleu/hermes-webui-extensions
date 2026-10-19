@@ -74,6 +74,11 @@ function makeHarness({ projects = [], sessions = [], session = null, dialogs = n
   w.closeMobileSidebar = () => { h.drawerCloses += 1; };
   w.refreshSessionList = function () { h.coreRefreshes += 1; };
   w.showConfirmDialog = (opts) => { h.confirms.push(opts); return (dialogs && dialogs.confirm) || Promise.resolve(false); };
+  // core's own delete flow (confirm + cleanup + open-chat handling live there)
+  h.coreDeletes = [];
+  w.deleteSession = async (sid) => { h.coreDeletes.push(sid); return true; };
+  h.workspaceSwitches = [];
+  w.switchToWorkspace = async (path) => { h.workspaceSwitches.push(path); };
   w.showPromptDialog = (opts) => { h.prompts.push(opts); return (dialogs && dialogs.prompt) || Promise.resolve(null); };
   if (coreMenu) {
     // core's menu builder surface (_buildSessionAction returns a button;
@@ -90,6 +95,11 @@ function makeHarness({ projects = [], sessions = [], session = null, dialogs = n
       h.mountedMenus.push(menu);
       w.document.body.appendChild(menu);
     };
+    // core's close retires the currently mounted menu
+    w.closeSessionActionMenu = () => {
+      const m = h.mountedMenus && h.mountedMenus[h.mountedMenus.length - 1];
+      if (m && m.isConnected) m.remove();
+    };
   }
   w.EventSource = function () { h.esAttempted = true; throw new Error('extension must not open EventSource'); };
   w.fetch = async (path, opts) => {
@@ -100,10 +110,15 @@ function makeHarness({ projects = [], sessions = [], session = null, dialogs = n
       h.posts.push({ url, body: JSON.parse(opts.body || '{}') });
       return { ok: true, status: 200, json: async () => ({ ok: true, session: { session_id: 'new-1' } }) };
     }
+    if (h.failLists && (url.startsWith('/api/projects') || url.startsWith('/api/sessions'))) {
+      return { ok: false, status: 503, json: async () => ({ error: 'down' }) };
+    }
     if (url.startsWith('/api/projects')) return { ok: true, status: 200, json: async () => ({ projects: projectsData }) };
     if (url.startsWith('/api/sessions')) return { ok: true, status: 200, json: async () => ({ sessions: sessionsData }) };
     if (url.startsWith('/api/file?')) {
-      if (h.mdMissing) return { ok: false, status: 404, json: async () => ({ error: 'File not found' }) };
+      if (h.holdFile) await h.holdFile;
+      if (h.mdMissing) return { ok: false, status: 404, json: async () => ({ error: 'Not a file: HERMES.md' }) };
+      if (h.mdRefused) return { ok: false, status: 404, json: async () => ({ error: 'Path traversal blocked: /ws/alpha/HERMES.md' }) };
       return { ok: true, status: 200, json: async () => ({ path: 'HERMES.md', content: '# ctx', size: 5, lines: 1 }) };
     }
     return { ok: false, status: 404, json: async () => ({ error: 'unknown ' + url }) };
@@ -152,6 +167,9 @@ async function main() {
     const kids = [...panel.children].map((n) => n.id);
     check(kids.indexOf('pf-folders') === kids.indexOf('sessionList') - 1, '#pf-folders is inserted immediately before #sessionList');
     check(kids.indexOf('pf-folders') > 1, 'core search box stays above the folder list');
+    const unGear = h.d.querySelector('#pf-folders .pf-group[data-key="unassigned"] .pf-group-gear');
+    checkEqual(unGear.style.visibility, 'hidden', 'Unassigned keeps the gear slot (visibility) so count badges align');
+    checkEqual(unGear.tabIndex, -1, 'the hidden Unassigned gear is not a tab stop');
     // toggle icon exists next to the core "+"
     const head = h.d.querySelector('#panelChat .panel-head-actions');
     check(head.querySelector('#pf-mode-toggle'), 'mode toggle injected into panel-head-actions');
@@ -207,9 +225,11 @@ async function main() {
     checkEqual(opts.model, 'some/model', 'bound model forwarded');
     checkEqual(opts.model_provider, 'acme', 'bound provider forwarded');
     // unassigned new-chat null semantics are covered in harness #4.
-    h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-newchat').click();
+    check(!h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-newchat'),
+      'non-empty folders rely on the header "+" (no duplicate inline New chat row)');
+    h.d.querySelector('#pf-folders .pf-group[data-key="p2"] .pf-newchat').click();
     await tick(5);
-    checkEqual(h.newSessionCalls[1].options.project_id, 'p1', 'in-folder New chat here passes the project');
+    checkEqual(h.newSessionCalls[1].options.project_id, 'p2', 'empty-folder New chat here passes the project');
     h.close();
   }
 
@@ -227,9 +247,18 @@ async function main() {
     checkEqual(h.drawerCloses, 1, 'mobile drawer closed after new session (closeMobileSidebar)');
     // core's empty-chat reuse guard (#1171) is honored for unscoped "+"
     h.w._currentSessionIsReusableEmptyChat = () => true;
+    h.w.S.session = { session_id: 'empty-1', project_id: null };
+    const drawerBefore = h.drawerCloses;
     h.d.querySelector('#pf-folders .pf-group[data-key="unassigned"] .pf-group-plus').click();
     await tick(5);
-    checkEqual(h.newSessionCalls.length, 1, 'unassigned "+" reuses the open empty chat instead of minting a new one');
+    checkEqual(h.newSessionCalls.length, 1, 'unassigned "+" reuses the open empty unassigned chat instead of minting a new one');
+    checkEqual(h.drawerCloses, drawerBefore + 1, 'reuse path also closes the mobile drawer');
+    // ...but never an empty chat that is filed under a project
+    h.w.S.session = { session_id: 'empty-2', project_id: 'p1' };
+    h.d.querySelector('#pf-folders .pf-group[data-key="unassigned"] .pf-group-plus').click();
+    await tick(5);
+    checkEqual(h.newSessionCalls.length, 2, 'unassigned "+" does not reuse an empty chat that belongs to a project');
+    checkEqual(h.newSessionCalls[1].options.project_id, null, 'the new chat is explicitly unassigned');
     h.close();
   }
 
@@ -295,11 +324,11 @@ async function main() {
     await h.refresh(); // identical payload -> hash unchanged
     check(rowA === h.rowFor('s1'), 'unchanged snapshot never rebuilds rows');
     // data change reconciles in place; focus on a surviving control stays put
-    const showMoreBtn = h.d.querySelector('#pf-folders [data-pfk^="nc:"]');
-    showMoreBtn.focus();
-    h.setData(undefined, [...sessions, session('s3')]);
+    const s2Open = h.rowFor('s2').querySelector('.pf-row-open');
+    s2Open.focus();
+    h.setData(undefined, [...sessions.map((x) => x.session_id === 's2' ? session('s2', { last_message_at: 5000 }) : x), session('s3')]);
     await h.refresh();
-    check(h.w.document.activeElement === h.d.querySelector('#pf-folders [data-pfk^="nc:"]'),
+    check(h.w.document.activeElement === h.rowFor('s2').querySelector('.pf-row-open'),
       'focus is restored to the same control after a reconciled repaint');
     check(h.rowFor('s3'), 'new session appears without a full rebuild');
     check(h.rowFor('s1') === rowA, 'existing row element is reused across reconcile');
@@ -333,13 +362,13 @@ async function main() {
     const labels = [...h.mountedMenus[0].querySelectorAll('button')].map((b) => b.textContent);
     check(labels.some((l) => l.includes('Alpha')), 'move-to-project entries list core projects');
     check(labels.some((l) => l.includes('Regenerate title')), 'menu offers Regenerate title (core endpoint)');
-    // reject confirm -> no delete POST
+    // delete is core's own deleteSession (its confirm, cleanup, open-chat handling)
     const del = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Delete'));
     del.onclick({});
     await tick(10);
-    checkEqual(h.confirms.length, 1, 'delete asks through core showConfirmDialog');
-    checkEqual(h.confirms[0].danger, true, 'delete confirm is a danger dialog');
-    check(!h.posts.some((p) => p.url === '/api/session/delete'), 'declined confirm never deletes');
+    checkEqual(h.coreDeletes.join(','), 's1', 'delete delegates to core deleteSession(session_id)');
+    check(!h.posts.some((p) => p.url === '/api/session/delete'), 'no hand-rolled /api/session/delete POST');
+    checkEqual(h.confirms.length, 0, 'no duplicate extension-side confirm (core asks)');
     h.close();
   }
   {
@@ -347,23 +376,16 @@ async function main() {
     h.w.S = { session: { session_id: 's1' }, activeProfile: 'default' };
     await boot(h);
     h.rowFor('s1').querySelector('.pf-row-more').click();
+    const fetchesBefore = h.fetches.filter((u) => u.startsWith('/api/sessions')).length;
     const del = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Delete'));
     del.onclick({});
-    await tick(10);
-    check(h.posts.some((p) => p.url === '/api/session/delete'), 'confirmed delete posts to core /api/session/delete');
-    // deleting the OPEN session must move the UI to the next chat, never
-    // leave the composer bound to a dead id (core parity)
-    h.setData(undefined, [session('s1'), session('s2', { last_message_at: 500 })]);
-    await h.refresh();
-    h.w.S = { session: { session_id: 's1' }, activeProfile: 'default' };
-    h.rowFor('s1').querySelector('.pf-row-more').click();
-    [...h.mountedMenus[1].querySelectorAll('button')].find((b) => b.textContent.includes('Delete')).onclick({});
-    await tick(20);
-    check(h.opens.includes('s2'), 'deleting the open chat opens the most recent remaining chat');
+    await tick(200);
+    checkEqual(h.coreDeletes.join(','), 's1', 'deleting the open chat is core deleteSession too (core moves off the dead id)');
+    check(h.fetches.filter((u) => u.startsWith('/api/sessions')).length > fetchesBefore, 'folder view refreshes after core delete');
     // regenerate title -> core endpoint with prefer_latest
     h.w.S = { session: null, activeProfile: 'default' };
     h.rowFor('s1').querySelector('.pf-row-more').click();
-    const regen = [...h.mountedMenus[2].querySelectorAll('button')].find((b) => b.textContent.includes('Regenerate title'));
+    const regen = [...h.mountedMenus[1].querySelectorAll('button')].find((b) => b.textContent.includes('Regenerate title'));
     regen.onclick({});
     await tick(20);
     const regenPost = h.posts.find((p) => p.url === '/api/session/title/regenerate');
@@ -418,7 +440,10 @@ async function main() {
     save.click();
     await tick(10);
     const saved = h.posts.find((p) => p.url === '/api/file/save');
-    check(saved && saved.body.content === '# ctx' && saved.body.path === 'HERMES.md', 'save posts through core /api/file/save');
+    check(saved && saved.body.content === '# ctx', 'save posts through core /api/file/save');
+    checkEqual(saved.body.path, '/ws/alpha/HERMES.md', 'save uses the absolute bound-workspace path (core refuses it if the session moved)');
+    check(h.fetches.some((u) => u.startsWith('/api/file?') && u.includes('path=' + encodeURIComponent('/ws/alpha/HERMES.md'))),
+      'read uses the same absolute path as the save');
     h.close();
   }
   {
@@ -449,7 +474,11 @@ async function main() {
     await boot(h);
     h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-gear').click();
     const md = [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md'));
-    check(md.disabled, 'HERMES.md disabled until a session in the bound workspace exists');
+    check(!md.disabled, 'HERMES.md stays enabled (a disabled reason would be tooltip-only on touch)');
+    md.onclick({});
+    await tick(10);
+    check(!h.d.querySelector('.pf-dialog'), 'no dialog without a session in the bound workspace');
+    check(h.toasts.some((t) => /Open or create a chat/.test(t)), 'the action explains what is missing');
     h.close();
   }
 
@@ -476,6 +505,159 @@ async function main() {
     const bind = h.posts.find((p) => p.url === '/api/projects/bind');
     check(bind, 'workspace dialog writes through core /api/projects/bind');
     checkEqual(bind.body.default_workspace, '/ws/new-place', 'bind payload uses core field name');
+    h.close();
+  }
+
+  // ── 16. retained pager buttons act on the CURRENT rows ───────────────
+  {
+    const projects = [{ project_id: 'p1', name: 'Alpha' }];
+    const mk = (n) => { const a = []; for (let i = 1; i <= n; i++) a.push(session('q' + String(i).padStart(2, '0'), { project_id: 'p1', last_message_at: 1000 - i })); return a; };
+    const h = makeHarness({ projects, sessions: mk(6) });
+    await boot(h);
+    h.setData(undefined, mk(20));
+    await h.refresh(); // Show more button is retained, label updated
+    const counts = [];
+    for (let i = 0; i < 3; i++) {
+      h.groupBody('p1').querySelector('.pf-showmore').click();
+      counts.push(h.groupBody('p1').querySelectorAll('.pf-row').length);
+    }
+    checkEqual(counts.join(','), '10,15,20', 'Show more pages through rows that arrived after the button was created');
+    h.close();
+  }
+
+  // ── 17. keyboard focus never falls to <body> when a control vanishes ──
+  {
+    // p0 renders first, so "first control in the list" != p1's own header
+    const projects = [{ project_id: 'p0', name: 'Zero' }, { project_id: 'p1', name: 'Alpha' }];
+    const sessions = [session('z1', { project_id: 'p0' })];
+    for (let i = 1; i <= 7; i++) sessions.push(session('k' + i, { project_id: 'p1', last_message_at: 1000 - i }));
+    const h = makeHarness({ projects, sessions });
+    await boot(h);
+    const more = h.groupBody('p1').querySelector('.pf-showmore');
+    more.focus();
+    more.click(); // last page: the button disappears
+    check(!more.isConnected, 'Show more is gone after the last page');
+    checkEqual(h.w.document.activeElement, h.rowFor('k6').querySelector('.pf-row-open'),
+      'focus lands on the first newly revealed chat, not <body>');
+    const less = h.groupBody('p1').querySelector('.pf-showless');
+    less.focus();
+    less.click();
+    checkEqual(h.w.document.activeElement, h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-toggle'),
+      'Show less hands focus to the folder header');
+    // a focused row that disappears on refresh falls back to its folder header
+    h.rowFor('k2').querySelector('.pf-row-open').focus();
+    h.setData(undefined, sessions.filter((x) => x.session_id !== 'k2'));
+    await h.refresh();
+    check(!h.rowFor('k2'), 'removed row is gone');
+    checkEqual(h.w.document.activeElement, h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-toggle'),
+      'focus on a removed row falls back to the folder header');
+    h.close();
+  }
+
+  // ── 18. core menu actions return focus to the trigger first ───────────
+  {
+    const h = makeHarness({ projects: [{ project_id: 'p1', name: 'Alpha' }], sessions: [session('s1')], coreMenu: true });
+    await boot(h);
+    const trigger = h.rowFor('s1').querySelector('.pf-row-more');
+    trigger.click();
+    const menu = h.mountedMenus[0];
+    const item = [...menu.querySelectorAll('button')].find((b) => b.textContent.includes('Regenerate title'));
+    item.focus();
+    menu.remove(); // core's close removes the focused item
+    let focusAtAction = null;
+    const origFetch = h.w.fetch;
+    h.w.fetch = async (path, opts) => { if (String(path).includes('/title/regenerate')) focusAtAction = h.w.document.activeElement; return origFetch(path, opts); };
+    item.onclick({ preventDefault() {}, stopPropagation() {} });
+    await tick(10);
+    checkEqual(focusAtAction, trigger, 'a menu action runs with focus back on its trigger (never <body>)');
+    h.close();
+  }
+
+  // ── 18b. one core menu at a time; same trigger toggles ───────────────
+  {
+    const h = makeHarness({ projects: [], sessions: [session('s1'), session('s2')], coreMenu: true });
+    await boot(h);
+    h.rowFor('s1').querySelector('.pf-row-more').click();
+    h.rowFor('s2').querySelector('.pf-row-more').click();
+    checkEqual(h.d.querySelectorAll('body > .session-action-menu').length, 1, 'opening another row menu retires the open one');
+    h.rowFor('s2').querySelector('.pf-row-more').click();
+    checkEqual(h.d.querySelectorAll('body > .session-action-menu').length, 0, 'the same trigger toggles its menu closed');
+    h.close();
+  }
+
+  // ── 19. HERMES.md dialog keeps focus inside, then returns it ─────────
+  {
+    const projects = [{ project_id: 'p1', name: 'Alpha', default_workspace: '/ws/alpha' }];
+    const sessions = [session('s1', { project_id: 'p1', workspace: '/ws/alpha' })];
+    const h = makeHarness({ projects, sessions, coreMenu: true });
+    await boot(h);
+    let release;
+    h.holdFile = new Promise((r) => { release = r; });
+    const gear = h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-gear');
+    gear.click();
+    [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md')).onclick({});
+    await tick(5);
+    const dlg = h.d.querySelector('.pf-dialog');
+    check(dlg && dlg.contains(h.w.document.activeElement), 'while loading, focus is on an enabled control inside the dialog');
+    release();
+    h.holdFile = null;
+    await tick(20);
+    checkEqual(h.w.document.activeElement, dlg.querySelector('.pf-textarea'), 'after a successful read the editor has focus');
+    [...dlg.querySelectorAll('.pf-btn')].find((b) => b.textContent === 'Save').click();
+    await tick(20);
+    check(!h.d.querySelector('.pf-dialog'), 'dialog closes after save');
+    checkEqual(h.w.document.activeElement, gear, 'focus returns to the project gear');
+    h.close();
+  }
+  {
+    // a 404 that is NOT "file missing" (core refusal) is reported as such
+    const projects = [{ project_id: 'p1', name: 'Alpha', default_workspace: '/ws/alpha' }];
+    const sessions = [session('s1', { project_id: 'p1', workspace: '/ws/alpha' })];
+    const h = makeHarness({ projects, sessions, coreMenu: true });
+    h.mdRefused = true;
+    await boot(h);
+    h.d.querySelector('#pf-folders .pf-group[data-key="p1"] .pf-group-gear').click();
+    [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('HERMES.md')).onclick({});
+    await tick(30);
+    const txt = h.d.querySelector('.pf-dialog .pf-dialog-text').textContent;
+    check(/Path traversal blocked/.test(txt) && !/No HERMES\.md/.test(txt), 'core refusals are not mislabeled as "no file yet"');
+    checkEqual([...h.d.querySelectorAll('.pf-dialog .pf-btn')].find((b) => b.textContent === 'Save').disabled, true, 'Save stays disabled on any failed read');
+    h.close();
+  }
+
+  // ── 20. Use project workspace: open chat via core switchToWorkspace ──
+  {
+    const projects = [{ project_id: 'p1', name: 'Alpha', default_workspace: '/ws/alpha' }];
+    const sessions = [session('s1', { project_id: 'p1', workspace: '/ws/old' }), session('s2', { project_id: 'p1', workspace: '/ws/old' })];
+    const h = makeHarness({ projects, sessions, coreMenu: true, dialogs: { confirm: Promise.resolve(true) } });
+    h.w.S = { session: { session_id: 's1', workspace: '/ws/old' }, activeProfile: 'default' };
+    await boot(h);
+    h.rowFor('s1').querySelector('.pf-row-more').click();
+    [...h.mountedMenus[0].querySelectorAll('button')].find((b) => b.textContent.includes('Use project workspace')).onclick({});
+    await tick(20);
+    checkEqual(h.workspaceSwitches.join(','), '/ws/alpha', 'the open chat switches through core switchToWorkspace (composer + tree follow)');
+    check(!h.posts.some((p) => p.url === '/api/session/update'), 'no bare /api/session/update for the open chat');
+    h.rowFor('s2').querySelector('.pf-row-more').click();
+    [...h.mountedMenus[1].querySelectorAll('button')].find((b) => b.textContent.includes('Use project workspace')).onclick({});
+    await tick(20);
+    const upd = h.posts.find((p) => p.url === '/api/session/update');
+    check(upd && upd.body.session_id === 's2' && upd.body.workspace === '/ws/alpha', 'a background chat is updated through /api/session/update');
+    check(h.toasts.some((t) => /Workspace set to \/ws\/alpha/.test(t)), 'success toast names the workspace');
+    h.close();
+  }
+
+  // ── 21. no false empty state before the first data round ─────────────
+  {
+    const h = makeHarness({ projects: [], sessions: [session('s1')] });
+    h.failLists = true;
+    await tick(30);
+    check(!h.d.querySelector('#pf-folders .pf-group'), 'no "0 chats" groups are painted before data loads');
+    check(/Could not load conversations/.test(h.d.getElementById('pf-scroll').textContent), 'a failed first load says so');
+    h.failLists = false;
+    await h.refresh();
+    check(h.rowFor('s1'), 'rows appear once data loads');
+    const note = h.d.querySelector('#pf-scroll .pf-empty');
+    check(!note || note.style.display === 'none', 'the failure note is hidden after a good round');
     h.close();
   }
 

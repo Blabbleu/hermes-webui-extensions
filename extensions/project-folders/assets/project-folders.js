@@ -68,6 +68,20 @@
     // read-only access to lexical core consts (ICONS/LOCALES) without eval
     try { return probe(); } catch (_) { return null; }
   }
+  // Static SVG markup only (core's own ICONS strings, or the fixed fallbacks
+  // below); never interpolated with user data.
+  const PF_ICONS = {
+    plus: '<svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" aria-hidden="true"><path d="M8 3v10M3 8h10"/></svg>',
+    gear: '<svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06A1.65 1.65 0 0 0 4.68 15a1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06A1.65 1.65 0 0 0 9 4.68a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06A1.65 1.65 0 0 0 19.4 9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>',
+    more: '<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor" stroke="none" aria-hidden="true"><circle cx="8" cy="3" r="1.25"/><circle cx="8" cy="8" r="1.25"/><circle cx="8" cy="13" r="1.25"/></svg>',
+  };
+  function iconMarkup(name) {
+    const core = coreConst('ICONS', () => {
+      /* eslint-disable-next-line no-undef */
+      return (typeof ICONS === 'object' && ICONS && typeof ICONS[name] === 'string') ? ICONS[name] : null;
+    });
+    return core || PF_ICONS[name] || '';
+  }
 
   // i18n: route every label through core's t(); pf_* keys are seeded into
   // core's locale catalog at boot (core's t() reads LOCALES.en as fallback),
@@ -105,7 +119,6 @@
     pf_workspace_unbound: 'Workspace unbound',
     pf_workspace_bound: 'Workspace bound',
     pf_bind_failed: 'Workspace bind failed',
-    pf_cannot_undo: 'This cannot be undone.',
     pf_failed_to_load: 'Failed to load',
     pf_new_chat_failed: 'New chat failed',
     pf_move_failed: 'Move failed',
@@ -113,6 +126,20 @@
     pf_delete_failed: 'Delete failed',
     pf_regenerate_failed: 'Regenerate title failed',
     pf_workspace_update_failed: 'Workspace update failed',
+    pf_workspace_set: 'Workspace set to {0}',
+    pf_use_project_workspace_confirm: 'Change this conversation\'s working directory to {0}?',
+    pf_workspace_prompt_message: 'New chats in this project start in this folder (validated by the WebUI server). The binding is core\'s own, shared with core\'s project quick-create.',
+    pf_project_delete_confirm: 'Conversations become Unassigned; workspace files are untouched.',
+    pf_empty_unassigned: 'No unassigned chats.',
+    pf_loading: 'Loading conversations…',
+    pf_load_failed_retrying: 'Could not load conversations. Retrying…',
+    pf_incompatible: 'Project Folders is inactive: this WebUI version is missing expected hooks ({0}).',
+    pf_incompatible_hint: 'Switch to the classic sidebar (folder icon in the Chat panel header) to keep using the standard list.',
+    pf_hermes_md_no_workspace: 'Set a workspace for this project first.',
+    pf_hermes_md_saved: 'HERMES.md saved',
+    pf_save: 'Save',
+    pf_loading_file: 'Loading…',
+    pf_close: 'Close',
   };
   (function seedLocaleKeys() {
     coreConst('LOCALES', () => {
@@ -141,6 +168,8 @@
 
   const state = {
     ready: false,
+    loaded: false, // first successful projects+sessions round finished
+    loadError: false, // last round failed before anything was loaded
     compatible: true,
     compatReason: '',
     mode: 'folders',
@@ -338,6 +367,7 @@
     mix('c' + Object.keys(state.collapsed).filter(k => state.collapsed[k]).sort().join(','));
     mix('v' + Object.keys(state.visibleCounts).sort().map(k => k + ':' + state.visibleCounts[k]).join(','));
     mix('a' + (activeSid() || ''));
+    mix('l' + (state.loaded ? 1 : 0) + (state.loadError ? 1 : 0));
     return String(h >>> 0);
   }
 
@@ -373,9 +403,17 @@
       syncSearchFromDom();
       const results = await Promise.allSettled([loadProjects(), loadSessions()]);
       if (results[0].status !== 'fulfilled' || results[1].status !== 'fulfilled') {
-        requestRefresh(8000); // network hiccup — retry soon, keep last render
+        // network hiccup — retry soon, keep the last good render; before the
+        // first good round, say so instead of showing a false empty state
+        if (!state.loaded && !state.loadError) {
+          state.loadError = true;
+          refreshNow();
+        }
+        requestRefresh(8000);
         return;
       }
+      state.loaded = true;
+      state.loadError = false;
       refreshNow();
     } catch (err) {
       console.warn('[' + EXT_ID + '] refresh failed', err);
@@ -619,31 +657,71 @@
       const holder = a.closest('[data-pfk]');
       if (!holder) return null;
       lastFocusKey = holder.getAttribute('data-pfk');
-      return lastFocusKey;
+      const group = a.closest('.pf-group');
+      return { key: lastFocusKey, group: group ? group.dataset.key : null };
     } catch (_) { return null; }
   }
-  function restoreFocusKey(key) {
-    if (!key || !scrollEl) return;
+  function pfkSelector(key) {
+    return '[data-pfk="' + (window.CSS && CSS.escape ? CSS.escape(key) : String(key).replace(/["\\]/g, '\\$&')) + '"]';
+  }
+  function isFocusableNow(n) {
+    try {
+      if (!n || !n.isConnected || n.disabled || typeof n.focus !== 'function') return false;
+      const cs = getComputedStyle(n);
+      return cs.visibility !== 'hidden' && cs.display !== 'none';
+    } catch (_) { return false; }
+  }
+  // Move focus to a pf control by key. Returns true when focus landed.
+  function focusPfk(key) {
+    if (!key || !scrollEl) return false;
     let target = null;
+    try { target = scrollEl.querySelector(pfkSelector(key)); } catch (_) { return false; }
+    if (!isFocusableNow(target)) return false;
+    try { target.focus({ preventScroll: true }); } catch (_) {
+      try { target.focus(); } catch (_) { return false; }
+    }
+    return document.activeElement === target;
+  }
+  // Focus must never fall to <body> while the user is keyboarding through
+  // the list: core treats Enter on <body> as "Allow once" for a visible
+  // approval card. When the focused control is gone after a reconcile
+  // (deleted row, vanished pager), fall back to its group header, then to
+  // the first control in the list, then to the header toggle.
+  function restoreFocusKey(cap) {
+    if (!cap || !scrollEl) return;
     try {
       const a = document.activeElement;
-      if (a && scrollEl.contains(a)) return; // focus survived the reconcile
-      target = scrollEl.querySelector('[data-pfk="' + (window.CSS && CSS.escape ? CSS.escape(key) : key) + '"]');
+      if (a && a !== document.body && a.isConnected && scrollEl.contains(a)) return; // survived
+      if (a && a !== document.body && a !== document.documentElement && a.isConnected && !scrollEl.contains(a)) return; // user moved on
     } catch (_) { return; }
-    if (!target || typeof target.focus !== 'function') return;
-    try { target.focus({ preventScroll: true }); } catch (_) {
-      try { target.focus(); } catch (_) {}
-    }
+    if (focusPfk(cap.key)) return;
+    if (cap.group && focusPfk('g:' + cap.group)) return;
+    try {
+      const first = scrollEl.querySelector('[data-pfk]');
+      if (first && focusPfk(first.getAttribute('data-pfk'))) return;
+    } catch (_) {}
+    try {
+      const tog = document.getElementById('pf-mode-toggle');
+      if (isFocusableNow(tog)) tog.focus({ preventScroll: true });
+    } catch (_) {}
   }
 
   function render() {
     if (!pfRoot || state.mode !== 'folders') return;
     if (!state.compatible) { renderIncompatible(); return; }
-    const focusKey = captureFocusKey();
+    const focusCap = captureFocusKey();
+    if (!state.loaded) {
+      // no false "0 chats" flash before the first data round
+      setScrollEmpty(state.loadError
+        ? L('pf_load_failed_retrying', 'Could not load conversations. Retrying…')
+        : L('pf_loading', 'Loading conversations…'));
+      return;
+    }
     const groups = computeGroups();
 
     if (!groups.length) {
       setScrollEmpty(L('pf_no_projects_hint', 'No conversations yet. Create a project or start a chat.'));
+      if (focusCap) restoreFocusKey(focusCap);
       return;
     }
     clearScrollEmpty();
@@ -668,7 +746,7 @@
       }
     }
 
-    if (focusKey) restoreFocusKey(focusKey);
+    if (focusCap) restoreFocusKey(focusCap);
   }
 
   let emptyEl = null;
@@ -688,9 +766,10 @@
   function renderIncompatible() {
     scrollEl.innerHTML = '';
     groupDom.clear();
+    emptyEl = null;
     const box = el('div', 'pf-empty pf-incompatible');
-    box.appendChild(el('div', null, 'Project Folders extension is inactive: the WebUI version is missing expected hooks (' + state.compatReason + ').'));
-    box.appendChild(el('div', 'pf-empty-hint', 'Switch to the classic sidebar (folder icon in the Chat panel header) to continue using the standard list.'));
+    box.appendChild(el('div', null, Lf('pf_incompatible', 'Project Folders is inactive: this WebUI version is missing expected hooks ({0}).', state.compatReason)));
+    box.appendChild(el('div', 'pf-empty-hint', L('pf_incompatible_hint', 'Switch to the classic sidebar (folder icon in the Chat panel header) to keep using the standard list.')));
     scrollEl.appendChild(box);
   }
 
@@ -721,16 +800,19 @@
     toggle.addEventListener('click', () => toggleCollapse(g.key));
 
     const actions = el('span', 'pf-group-actions');
-    const plus = el('button', 'pf-icon-btn pf-group-plus', '+');
+    const plus = el('button', 'pf-icon-btn pf-group-plus');
     plus.type = 'button';
     plus.dataset.pfk = 'gp:' + g.key;
+    plus.innerHTML = iconMarkup('plus'); // static SVG
     plus.addEventListener('click', (e) => {
       e.stopPropagation();
       void newChatInProject(g.key === 'unassigned' ? null : g.key);
     });
-    const gear = el('button', 'pf-icon-btn pf-group-gear', '⚙');
+    const gear = el('button', 'pf-icon-btn pf-group-gear');
     gear.type = 'button';
     gear.dataset.pfk = 'gg:' + g.key;
+    gear.innerHTML = iconMarkup('gear'); // static SVG
+    gear.setAttribute('aria-haspopup', 'menu');
     gear.addEventListener('click', (e) => {
       e.stopPropagation();
       openProjectMenu(g.key, gear);
@@ -796,7 +878,12 @@
       ? L('pf_new_chat_unassigned', 'New unassigned chat')
       : Lf('pf_new_chat_in', 'New chat in {0}', label);
     plus.setAttribute('aria-label', plus.title);
-    gear.style.display = isUn ? 'none' : '';
+    gear.style.display = '';
+    // keep the slot (visibility, not display) so Unassigned's count badge
+    // lines up with the project groups; hidden buttons are not focusable
+    gear.style.visibility = isUn ? 'hidden' : '';
+    gear.setAttribute('aria-hidden', isUn ? 'true' : 'false');
+    gear.tabIndex = isUn ? -1 : 0;
     gear.title = L('pf_project_actions', 'Project actions');
     gear.setAttribute('aria-label', gear.title);
     dom.groupEl.classList.toggle('pf-collapsed', collapsed);
@@ -834,27 +921,41 @@
       dom.rows.delete(sid);
     }
 
-    // pager + new-chat row (kept after rows, in stable order)
+    // pager + new-chat row (kept after rows, in stable order). Callbacks are
+    // re-bound on every reconcile (ensureButton assigns onclick) so a
+    // retained button never acts on a stale g.rows snapshot.
     const remaining = g.rows.length - n;
     dom.showMore = ensureButton(dom.bodyEl, dom.showMore, 'pf-showmore', 'sm:' + g.key,
       remaining > 0 ? Lf('pf_show_more', 'Show {0} more · {1} remaining', Math.min(PAGE_SIZE, remaining), remaining) : null,
       () => {
-        state.visibleCounts[g.key] = groupVisibleCount(g.key, g.rows) + PAGE_SIZE;
+        const btn = dom.showMore;
+        const hadFocus = !!btn && document.activeElement === btn;
+        const firstNew = g.rows[n];
+        state.visibleCounts[g.key] = n + PAGE_SIZE;
         state.lastHash = snapshotHash();
         render();
+        // keyboard users land on the first newly revealed chat, not <body>
+        if (hadFocus && (!btn || !btn.isConnected || document.activeElement !== btn) && firstNew) {
+          focusPfk('r:' + firstNew.session_id);
+        }
       });
     dom.emptyNote = ensureText(dom.bodyEl, dom.emptyNote, 'pf-group-empty',
-      (n === 0) ? L('pf_empty_group', 'No chats in this project yet.') : null);
+      (n === 0) ? (isUn ? L('pf_empty_unassigned', 'No unassigned chats.') : L('pf_empty_group', 'No chats in this project yet.')) : null);
     dom.showLess = ensureButton(dom.bodyEl, dom.showLess, 'pf-showless', 'sl:' + g.key,
       n > PAGE_SIZE ? L('pf_show_less', 'Show less') : null,
       () => {
+        // the vanished button's focus falls back to this folder's header
+        // through render()'s generic restore path
         state.visibleCounts[g.key] = PAGE_SIZE;
         state.lastHash = snapshotHash();
         render();
       });
+    // The header "+" is the primary new-chat control; the inline row only
+    // appears for an empty group (and is hidden on touch, where the header
+    // "+" is always visible — see CSS).
     dom.newChatBtn = ensureButton(dom.bodyEl, dom.newChatBtn, 'pf-newchat', 'nc:' + g.key,
-      '+ ' + L('pf_new_chat_here', 'New chat here'),
-      () => { void newChatInProject(g.key === 'unassigned' ? null : g.key); });
+      (n === 0) ? '+ ' + L('pf_new_chat_here', 'New chat here') : null,
+      () => { void newChatInProject(isUn ? null : g.key); });
     // "New chat here" is always the last row of a group, independent of
     // which pagers were (re)created this pass
     try {
@@ -874,11 +975,12 @@
       b.type = 'button';
       b.dataset.pfk = pfk;
       b.textContent = label;
-      b.addEventListener('click', onClick);
+      b.onclick = onClick;
       container.appendChild(b);
       return b;
     }
     if (current.textContent !== label) current.textContent = label;
+    current.onclick = onClick; // always the current reconcile's closure
     return current;
   }
   function ensureText(container, current, cls, text) {
@@ -927,9 +1029,13 @@
     });
 
     const time = el('span', 'pf-row-time');
-    const more = el('button', 'pf-row-more', '⋯');
+    const more = el('button', 'pf-row-more');
     more.type = 'button';
     more.dataset.pfk = 'm:' + s.session_id;
+    more.innerHTML = iconMarkup('more'); // core's static ICONS.more SVG
+    more.setAttribute('aria-haspopup', 'menu');
+    more.setAttribute('aria-label', L('pf_conversation_actions', 'Conversation actions'));
+    more.title = more.getAttribute('aria-label');
     more.addEventListener('click', (e) => {
       e.stopPropagation();
       openRowMenu(s.session_id, more);
@@ -1041,12 +1147,17 @@
   }
 
   async function newChatInProject(projectId) {
-    // mirror core's "+" reuse guard (#1171/#1432) for the unscoped case: an
-    // empty, idle open chat is reused instead of piling up new empty rows
+    // mirror core's "+" reuse guard (#1171/#1432) for the unscoped case, but
+    // only when the empty open chat is itself unassigned: "New unassigned
+    // chat" must never leave the user in an empty chat filed under a project
     if (!projectId) {
       try {
         const reusable = coreFn('_currentSessionIsReusableEmptyChat');
-        if (reusable && reusable()) {
+        const cur = coreS();
+        const curProject = cur && cur.session ? cur.session.project_id : null;
+        if (reusable && reusable() && !curProject) {
+          const closeDrawer = coreFn('closeMobileSidebar');
+          if (closeDrawer) { try { closeDrawer(); } catch (_) {} }
           const composer = document.getElementById('msg');
           if (composer && typeof composer.focus === 'function') { try { composer.focus(); } catch (_) {} }
           return;
@@ -1147,31 +1258,45 @@
   }
 
   function deleteSession(s) {
-    const confirm = coreFn('showConfirmDialog');
-    const run = async () => {
-      try {
-        await apiPost('/api/session/delete', { session_id: s.session_id });
-        reopenNextAfter(s.session_id);
-        requestRefresh(100);
-      } catch (err) {
-        toast(L('pf_delete_failed', 'Delete failed') + ': ' + ((err && err.message) || err), 4000);
-      }
-    };
-    if (confirm) {
-      confirm({
-        title: L('session_delete', 'Delete conversation') + '…',
-        message: L('pf_cannot_undo', 'This cannot be undone.'),
-        danger: true,
-      }).then((ok) => { if (ok) void run(); }).catch(() => {});
+    // Delegate to core's own delete flow (exported on window since the
+    // first project-capable cores): it owns the worktree-aware confirm copy,
+    // the wire-code error messages, per-session storage cleanup (draft,
+    // queue, handoff, session pointer) and moving the UI off the deleted
+    // chat — including the empty state after the last chat. A second
+    // hand-rolled copy of that flow is exactly what drifts from core.
+    const coreDelete = coreFn('deleteSession');
+    if (!coreDelete) {
+      toast(L('pf_delete_failed', 'Delete failed') + ': deleteSession unavailable', 4000);
       return;
     }
-    if (window.confirm('Delete this conversation? This cannot be undone.')) void run();
+    Promise.resolve()
+      .then(() => coreDelete(s.session_id))
+      .then(() => requestRefresh(100), (err) => {
+        toast(L('pf_delete_failed', 'Delete failed') + ': ' + ((err && err.message) || err), 4000);
+        requestRefresh(100);
+      });
   }
 
   async function useProjectWorkspace(s, workspace) {
+    // The OPEN chat goes through core's own workspace switch so the composer,
+    // pending profile-workspace override, topbar and file tree all follow
+    // (a bare /api/session/update leaves S.session.workspace stale and the
+    // next send restores the old directory).
+    const sw = coreFn('switchToWorkspace');
+    if (sw && activeSid() === s.session_id) {
+      try { await sw(workspace); } catch (err) {
+        toast(L('pf_workspace_update_failed', 'Workspace update failed') + ': ' + ((err && err.message) || err), 4000);
+      }
+      requestRefresh(100);
+      return;
+    }
     try {
-      await apiPost('/api/session/update', { session_id: s.session_id, workspace });
-      toast('OK — ' + workspace);
+      const d = await apiPost('/api/session/update', { session_id: s.session_id, workspace });
+      const applied = (d && d.session && d.session.workspace) || workspace;
+      // the target may have become the open chat while the request ran
+      const cur = coreS();
+      if (cur && cur.session && cur.session.session_id === s.session_id) cur.session.workspace = applied;
+      toast(Lf('pf_workspace_set', 'Workspace set to {0}', applied));
       requestRefresh(100);
     } catch (err) {
       toast(L('pf_workspace_update_failed', 'Workspace update failed') + ': ' + ((err && err.message) || err), 4000);
@@ -1227,7 +1352,8 @@
       document.removeEventListener('mousedown', onDoc, true);
       document.removeEventListener('keydown', onKey, true);
       window.removeEventListener('scroll', onScroll, true);
-      try { if (prevFocus && prevFocus.focus) prevFocus.focus({ preventScroll: true }); } catch (_) {}
+      const back = (anchor && anchor.isConnected) ? anchor : prevFocus;
+      try { if (back && back.focus) back.focus({ preventScroll: true }); } catch (_) {}
     };
     try {
       const first = menu.querySelector('.pf-menu-item:not([disabled])');
@@ -1235,11 +1361,27 @@
     } catch (_) {}
   }
 
+  let coreMenuEl = null;
+  let coreMenuAnchor = null;
   function openMenu(items, anchor, ariaLabel) {
     const build = coreFn('_buildSessionAction');
     const mount = coreFn('_mountSessionActionMenu');
     const closeCore = coreFn('closeSessionActionMenu');
     if (build && mount) {
+      // One menu at a time, like core's own trigger: core's mount helper does
+      // not retire a menu that is already open, and a second click on the
+      // same trigger toggles it closed.
+      if (coreMenuEl && coreMenuEl.isConnected) {
+        const same = coreMenuAnchor === anchor;
+        if (closeCore) { try { closeCore({ restoreFocus: false }); } catch (_) {} }
+        try { if (coreMenuEl.isConnected) coreMenuEl.remove(); } catch (_) {}
+        coreMenuEl = null;
+        coreMenuAnchor = null;
+        if (same) {
+          try { if (anchor && anchor.isConnected) anchor.focus({ preventScroll: true }); } catch (_) {}
+          return;
+        }
+      }
       const menu = document.createElement('div');
       menu.className = 'session-action-menu';
       menu.id = 'pf-action-menu-' + (++menuSeq);
@@ -1255,6 +1397,11 @@
         const icon = (it.icon && iconSet && iconSet[it.icon]) || '';
         const action = build(it.label, it.meta || '', icon, async () => {
           if (closeCore) { try { closeCore({ restoreFocus: false }); } catch (_) {} }
+          // Put focus back on the trigger BEFORE the action runs, so a
+          // dialog it opens restores there and a plain action (move,
+          // archive, regenerate) never leaves focus on <body>, where core
+          // treats Enter as "Allow once" for a visible approval card.
+          try { if (anchor && anchor.isConnected) anchor.focus({ preventScroll: true }); } catch (_) {}
           void it.action();
         }, it.danger ? 'session-action-danger' : '');
         if (it.disabled) {
@@ -1263,6 +1410,8 @@
         menu.appendChild(action);
       }
       mount(menu, { session_id: 'pf-menu-' + menuSeq }, anchor);
+      coreMenuEl = menu;
+      coreMenuAnchor = anchor;
       return;
     }
     openOwnMenu(items, anchor, ariaLabel);
@@ -1329,7 +1478,7 @@
           if (confirm) {
             confirm({
               title: L('pf_use_project_workspace', 'Use project workspace'),
-              message: 'Change this session\'s working directory to ' + bindings.workspace + '?',
+              message: Lf('pf_use_project_workspace_confirm', 'Change this conversation\'s working directory to {0}?', bindings.workspace),
               danger: true,
             }).then((ok) => { if (ok) void useProjectWorkspace(s, bindings.workspace); }).catch(() => {});
             return;
@@ -1384,13 +1533,14 @@
         action: () => void bindWorkspace(project, null),
       });
     }
+    // Kept enabled: a disabled item's reason would live only in a tooltip that
+    // touch users never see. The action itself explains what is missing.
     items.push({
       label: L('pf_hermes_md', 'Project instructions (HERMES.md)…'),
       meta: bindings.workspace
         ? (hermesMdSession(project) ? bindings.workspace + '/HERMES.md' : L('pf_hermes_md_no_session', 'Open or create a chat in the project workspace first.'))
-        : L('pf_set_workspace', 'Set workspace…'),
+        : L('pf_hermes_md_no_workspace', 'Set a workspace for this project first.'),
       icon: 'edit',
-      disabled: !bindings.workspace || !hermesMdSession(project),
       action: () => openHermesMdDialog(project),
     });
     items.push({ separator: true });
@@ -1438,13 +1588,13 @@
       prompt({
         title: (current ? L('pf_change_workspace', 'Change workspace…') : L('pf_set_workspace', 'Set workspace…'))
           + ' — ' + project.name,
-        message: 'New chats in this project start in this folder (validated by the WebUI server). Core-managed binding: shared with core\'s own project quick-create.',
+        message: L('pf_workspace_prompt_message', 'New chats in this project start in this folder (validated by the WebUI server). The binding is core\'s own, shared with core\'s project quick-create.'),
         value: current,
         placeholder: '/path/to/project',
       }).then(run).catch(() => {});
       return;
     }
-    const v = window.prompt('Workspace path for ' + project.name, current);
+    const v = window.prompt((current ? L('pf_change_workspace', 'Change workspace…') : L('pf_set_workspace', 'Set workspace…')) + ' — ' + project.name, current);
     run(v);
   }
 
@@ -1483,12 +1633,12 @@
     if (confirm) {
       confirm({
         title: L('pf_project_delete', 'Delete project…'),
-        message: 'Conversations become Unassigned; workspace files are untouched.',
+        message: L('pf_project_delete_confirm', 'Conversations become Unassigned; workspace files are untouched.'),
         danger: true,
       }).then((ok) => { if (ok) void run(); }).catch(() => {});
       return;
     }
-    if (window.confirm('Delete project ' + project.name + '?')) void run();
+    if (window.confirm(L('pf_project_delete', 'Delete project…') + ' ' + project.name + '\n' + L('pf_project_delete_confirm', 'Conversations become Unassigned; workspace files are untouched.'))) void run();
   }
 
   /* ── HERMES.md via core file API ─────────────────────────────────────── */
@@ -1512,19 +1662,39 @@
   function closeMdDialog() {
     if (!mdDialog) return;
     const prev = mdDialog.prevFocus;
+    const pid = mdDialog.projectId;
     try {
       document.removeEventListener('keydown', mdDialog.onKey, true);
       mdDialog.overlay.remove();
     } catch (_) {}
     mdDialog = null;
-    try { if (prev && prev.focus) prev.focus({ preventScroll: true }); } catch (_) {}
+    // Return focus to the opener (the project gear); never leave it on
+    // <body> behind a just-closed modal.
+    if (isFocusableNow(prev)) {
+      try { prev.focus({ preventScroll: true }); return; } catch (_) {}
+    }
+    if (pid && focusPfk('gg:' + pid)) return;
+    try {
+      const tog = document.getElementById('pf-mode-toggle');
+      if (isFocusableNow(tog)) tog.focus({ preventScroll: true });
+    } catch (_) {}
+  }
+
+  function mdPathFor(ws) {
+    // One absolute path for both the read and the save: core resolves it
+    // against the session's CURRENT workspace and rejects it if that
+    // workspace changed in between, instead of silently saving this text
+    // into another workspace's HERMES.md (a relative "HERMES.md" would).
+    return String(ws).replace(/[\\/]+$/, '') + '/HERMES.md';
   }
 
   function openHermesMdDialog(project) {
     if (mdDialog) closeMdDialog();
-    const s = hermesMdSession(project);
     const ws = projectBindings(project).workspace;
-    if (!s || !ws) { toast(L('pf_hermes_md_no_session', 'Open a chat in the project workspace first.')); return; }
+    if (!ws) { toast(L('pf_hermes_md_no_workspace', 'Set a workspace for this project first.')); return; }
+    const s = hermesMdSession(project);
+    if (!s) { toast(L('pf_hermes_md_no_session', 'Open or create a chat in the project workspace first.'), 5000); return; }
+    const mdPath = mdPathFor(ws);
     const prevFocus = document.activeElement;
     const overlay = el('div', 'pf-overlay');
     const dlg = el('div', 'pf-dialog');
@@ -1535,26 +1705,38 @@
     head.appendChild(el('div', 'pf-dialog-title', 'HERMES.md — ' + project.name));
     const x = el('button', 'pf-dialog-x', '×');
     x.type = 'button';
+    x.setAttribute('aria-label', L('pf_close', 'Close'));
+    x.title = x.getAttribute('aria-label');
     x.addEventListener('click', closeMdDialog);
     head.appendChild(x);
-    const status = el('div', 'pf-dialog-text', '…');
+    const status = el('div', 'pf-dialog-text', L('pf_loading_file', 'Loading…'));
+    status.setAttribute('aria-live', 'polite');
     const ta = el('textarea', 'pf-textarea');
     ta.spellcheck = false;
     ta.disabled = true;
+    ta.setAttribute('aria-label', 'HERMES.md');
     const err = el('div', 'pf-dialog-err');
+    err.setAttribute('role', 'alert');
     const row = el('div', 'pf-dialog-actions');
-    const save = el('button', 'pf-btn pf-btn-primary', 'Save');
+    const save = el('button', 'pf-btn pf-btn-primary', L('pf_save', 'Save'));
     save.type = 'button';
     save.disabled = true;
+    let saving = false;
     save.addEventListener('click', async () => {
+      if (saving || save.disabled) return;
+      saving = true;
       save.disabled = true;
+      err.textContent = '';
       try {
-        await apiPost('/api/file/save', { session_id: s.session_id, path: 'HERMES.md', content: ta.value });
-        toast('HERMES.md saved');
+        await apiPost('/api/file/save', { session_id: s.session_id, path: mdPath, content: ta.value });
+        toast(L('pf_hermes_md_saved', 'HERMES.md saved'));
         closeMdDialog();
       } catch (e) {
         err.textContent = (e && e.message) || String(e);
         save.disabled = false;
+        try { save.focus({ preventScroll: true }); } catch (_) {}
+      } finally {
+        saving = false;
       }
     });
     const cancel = el('button', 'pf-btn', L('cancel', 'Cancel'));
@@ -1587,30 +1769,39 @@
       const active = document.activeElement;
       if (e.shiftKey && (active === first || !dlg.contains(active))) {
         e.preventDefault(); last.focus();
-      } else if (!e.shiftKey && active === last) {
+      } else if (!e.shiftKey && (active === last || !dlg.contains(active))) {
         e.preventDefault(); first.focus();
       }
     });
     document.body.appendChild(overlay);
-    mdDialog = { overlay, onKey, prevFocus };
-    try { ta.focus(); } catch (_) {}
+    const me = { overlay, onKey, prevFocus, projectId: project.project_id };
+    mdDialog = me;
+    // The textarea is disabled until the read lands; start on an enabled
+    // control so focus is inside the modal from the first frame.
+    try { cancel.focus({ preventScroll: true }); } catch (_) {}
 
-    // Save stays disabled until a successful read (or a confirmed
-    // "no file yet") so a failed load can never blank an existing file.
+    // Save stays disabled until a successful read, so a failed load can
+    // never blank an existing file.
     void (async () => {
       try {
-        const d = await apiGet('/api/file?session_id=' + encodeURIComponent(s.session_id) + '&path=' + encodeURIComponent('HERMES.md'));
+        const d = await apiGet('/api/file?session_id=' + encodeURIComponent(s.session_id) + '&path=' + encodeURIComponent(mdPath));
+        if (mdDialog !== me) return; // closed meanwhile
         ta.value = (d && typeof d.content === 'string') ? d.content : '';
         ta.disabled = false;
         save.disabled = false;
-        status.textContent = 'HERMES.md · ' + (d && d.size != null ? d.size : ta.value.length) + ' bytes · ' + ws + '/HERMES.md';
+        status.textContent = 'HERMES.md · ' + (d && d.size != null ? d.size : ta.value.length) + ' bytes · ' + mdPath;
+        try { ta.focus({ preventScroll: true }); } catch (_) {}
       } catch (e) {
+        if (mdDialog !== me) return;
         ta.disabled = true;
         save.disabled = true;
-        if (e && e.status === 404) {
+        const msg = (e && e.message) || String(e);
+        // core answers 404 for a missing file AND for other refusals (too
+        // large, outside the workspace); only the former is "no file yet"
+        if (e && e.status === 404 && /^(Not a file|File not found)/i.test(msg)) {
           status.textContent = L('pf_hermes_md_missing', 'No HERMES.md yet.');
         } else {
-          status.textContent = L('pf_failed_to_load', 'Failed to load') + ': ' + ((e && e.message) || e);
+          status.textContent = L('pf_failed_to_load', 'Failed to load') + ': ' + msg;
         }
       }
     })();

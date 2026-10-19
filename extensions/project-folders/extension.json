@@ -40,7 +40,8 @@
         "sessions",
         "session",
         "/api/projects",
-        "/api/file"
+        "/api/file",
+        "/api/list"
       ],
       "write": [
         "/api/session/new",
@@ -53,7 +54,9 @@
         "/api/projects/bind",
         "/api/projects/rename",
         "/api/projects/delete",
-        "/api/file/save"
+        "/api/file/save",
+        "/api/session/import_cli",
+        "/api/profile/switch"
       ]
     },
     "webui_navigation": true,
@@ -66,7 +69,13 @@
         "hermes-pf-mode",
         "hermes-pf-collapse"
       ],
-      "shared_webui_keys": []
+      "shared_webui_keys": [
+        "hermes-webui-session",
+        "hermes-new-chat-draft-session",
+        "hermes-session-viewed-counts",
+        "hermes-session-completion-unread",
+        "hermes-session-completion-unread-cleared"
+      ]
     },
     "loopback_sidecar": false,
     "native_host": false,

@@ -22,7 +22,11 @@ Toggle it with the **folder icon next to the "+"** in the Chat panel header
   extension forwards the bindings itself; behavior matches core's project
   quick-create. "New chat" under Unassigned sends an explicit
   `project_id: null` (so core's active-project filter cannot re-file it) and
-  honors core's empty-chat reuse guard (#1171) instead of minting duplicates.
+  honors core's empty-chat reuse guard (#1171) instead of minting duplicates,
+  but only when the open empty chat is itself unassigned. The folder header
+  "+" is the primary control; an inline "+ New chat here" row appears only in
+  an empty folder (and not on touch devices, where the header "+" is always
+  visible).
 - **Open a chat** — goes through core's `_openSidebarSession()`, so the
   mobile drawer closes, extension session-open hooks run, and profile
   handling behaves exactly like the classic list.
@@ -30,19 +34,25 @@ Toggle it with the **folder icon next to the "+"** in the Chat panel header
   (core's `POST /api/session/title/regenerate` with `prefer_latest: true`
   and the user's configured title model — the same endpoint core's own menu
   uses, with a client-side abort past the proxy timeout), *Use project
-  workspace* (explicit, confirmed), Archive, Delete. Deleting or archiving
-  the **open** chat moves the UI to the most recent remaining conversation,
-  like core does. Rendered with core's own session-action menu builder when
-  available (a11y + styling parity).
+  workspace* (explicit, confirmed; for the open chat it runs core's own
+  `switchToWorkspace()`, so the composer and file tree follow), Archive,
+  Delete. **Delete is core's own `deleteSession()`**: core's confirm (with its
+  worktree warning), its per-session cleanup, and its handling of the open
+  chat, including the empty state after the last one. Archiving the open chat
+  moves the UI to the most recent remaining conversation. Rendered with core's
+  own session-action menu builder when available (a11y + styling parity).
 - **Project menu (⚙)** — New chat here, Set/Change/Unbind workspace via
   **core's** `POST /api/projects/bind` (the binding is core project state —
   shared with core's quick-create and visible to `/api/projects`),
   Project instructions (HERMES.md), Rename project, Delete project.
 - **HERMES.md** — read via `GET /api/file` and saved via
-  `POST /api/file/save` against a session in the project's bound workspace.
-  Core enforces path safety (`O_NOFOLLOW`, symlink rejection), preserves file
-  modes, and caps reads. **Save stays disabled until a successful read**, so
-  a failed load can never blank an existing file.
+  `POST /api/file/save` against a session in the project's bound workspace,
+  using the same absolute `<workspace>/HERMES.md` path for both calls, so a
+  session whose workspace changed in between is refused by core instead of
+  saving into another workspace's file. Core enforces path safety
+  (`O_NOFOLLOW`, symlink rejection), preserves file modes, and caps reads.
+  **Save stays disabled until a successful read**, so a failed load can never
+  blank an existing file.
 - **Drag & drop** (desktop) — drag a row onto a folder header to move it
   (`/api/session/move`). Moving never rewrites the session's workspace; the
   explicit *Use project workspace* menu item is the deliberate path.
@@ -66,8 +76,13 @@ Toggle it with the **folder icon next to the "+"** in the Chat panel header
   `<button>`s (native Enter/Space). Group actions and row actions reveal on
   `:focus-within` as well as hover; on coarse pointers they are always
   visible (opacity-based, so no touch-cascade collapse is possible).
-- On phone widths (≤ 640 px, matching core's own rule) rows and controls
-  meet core's 44 px minimum.
+- On touch devices (tablets included) and on phone widths (≤ 640 px,
+  matching core's own rule) rows and controls meet core's 44 px minimum.
+- Focus never falls to `<body>` while you keyboard through the list: after
+  a menu action it returns to the menu's trigger, after a reconcile removes
+  the focused control it moves to the folder header, and the HERMES.md dialog
+  starts and ends on a real control. (Core treats Enter on `<body>` as
+  "Allow once" for a visible approval card.)
 - The open chat's row is highlighted (`aria-current="page"`) and stays
   visible when it sorts just below the pagination window (the window extends
   up to 15 rows; further down, "Show more" reaches it).
@@ -87,9 +102,9 @@ Folders mode replaces only the **list**; the classic sidebar keeps owning:
 - **Creating a missing HERMES.md** — core's `/api/file/save` refuses to
   create files that do not exist (404). The dialog edits an existing
   `HERMES.md` in the project workspace; to create one, ask the agent in a
-  project chat or create the file yourself, then reopen the dialog. The
-  HERMES.md item is disabled until a visible session exists in the bound
-  workspace, because core's file API is session-scoped.
+  project chat or create the file yourself, then reopen the dialog. Core's
+  file API is session-scoped, so the dialog needs a visible chat in the bound
+  workspace; the menu item stays enabled and says what is missing.
 
 ## Trust model
 
@@ -102,6 +117,15 @@ Folders mode replaces only the **list**; the classic sidebar keeps owning:
   leaves core projects and their bindings intact.
 - Cosmetic state (`hermes-pf-mode`, `hermes-pf-collapse`) lives in browser
   localStorage under extension-owned keys.
+- **Core side effects, declared.** Opening, creating and deleting chats and
+  switching a chat's workspace run through core's own helpers, so core's
+  normal side effects happen on the extension's behalf: `POST
+  /api/session/import_cli` (opening a CLI session), `POST /api/profile/switch`
+  (opening another profile's chat while all-profiles is on), `GET /api/list`
+  (file-tree refresh after a workspace switch), and core's own localStorage
+  keys for the open-session pointer, new-chat draft, viewed counts and
+  completion-unread state. These are listed in `extension.json`
+  (`webui_api`, `storage.shared_webui_keys`).
 - Labels route through core's `t()` i18n with English fallbacks.
 
 ## Install / disable / uninstall
@@ -115,8 +139,9 @@ Folders mode replaces only the **list**; the classic sidebar keeps owning:
 
 ## Compatibility
 
-Tested against core WebUI `77c8fc174` (`exp-v0.52.515`, `static/sessions.js`,
-`static/boot.js`, `static/ui.js`, `api/routes.py` read at that revision).
+Tested against core WebUI `77c8fc174` (`exp-v0.52.515`) and `5a08e4bf2`
+(`exp-v0.52.524`): `static/sessions.js`, `static/boot.js`, `static/ui.js`,
+`static/panels.js` and `api/routes.py` read at those revisions.
 The extension degrades gracefully: if expected core hooks are missing it
 never engages folders mode at all (core's list stays exactly as shipped)
 and shows a hint only inside its own inert container.

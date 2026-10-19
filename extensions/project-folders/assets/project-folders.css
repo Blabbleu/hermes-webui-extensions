@@ -24,7 +24,9 @@ body.pf-mode-folders #sessionList { display: none !important; }
 /* header toggle (icon next to core's "+") */
 #pf-mode-toggle { opacity: .65; }
 #pf-mode-toggle.pf-on { opacity: 1; color: var(--accent, #4c8dff); }
-#pf-mode-toggle svg { width: 16px; height: 16px; display: block; }
+/* same hover treatment and 14px glyph as core's adjacent "+" (.panel-head-btn) */
+#pf-mode-toggle:hover { opacity: 1; background: var(--accent-bg, rgba(80,120,255,.12)); color: var(--accent-text, var(--text, #ddd)); }
+#pf-mode-toggle svg { width: 14px; height: 14px; display: block; }
 
 /* scroll area */
 .pf-scroll { flex: 1; overflow-y: auto; min-height: 0; overscroll-behavior-y: contain; padding-bottom: 24px; }
@@ -103,7 +105,11 @@ body.pf-mode-folders #sessionList { display: none !important; }
   line-height: 1;
   padding: 0;
   font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
 }
+.pf-icon-btn svg, .pf-row-more svg { display: block; pointer-events: none; }
 .pf-icon-btn:hover { background: var(--hover-bg, rgba(255,255,255,.08)); color: var(--text, #ddd); }
 .pf-icon-btn:focus-visible { outline: 2px solid var(--focus-ring, var(--accent, #4c8dff)); outline-offset: -2px; color: var(--text, #ddd); }
 
@@ -165,6 +171,9 @@ body.pf-mode-folders #sessionList { display: none !important; }
   font-size: 14px;
   line-height: 1;
   font-family: inherit;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   opacity: 0;
   pointer-events: none;
 }
@@ -182,6 +191,9 @@ body.pf-mode-folders #sessionList { display: none !important; }
 .pf-dot-live { background: var(--accent, #4c8dff); animation: pf-pulse 1.2s ease-in-out infinite; }
 .pf-dot-att { background: var(--warning, #e6a23c); }
 @keyframes pf-pulse { 0%,100% { opacity: 1; } 50% { opacity: .35; } }
+@media (prefers-reduced-motion: reduce) {
+  .pf-dot-live { animation: none; }
+}
 
 .pf-newchat {
   display: block;
@@ -279,6 +291,9 @@ body.pf-mode-folders #sessionList { display: none !important; }
   flex-direction: column;
   gap: 10px;
   max-height: 85vh;
+  max-height: 85dvh;
+  overflow: auto;
+  box-sizing: border-box;
   padding: 12px 16px 16px;
 }
 .pf-dialog-head { display: flex; align-items: center; justify-content: space-between; }
@@ -300,7 +315,7 @@ body.pf-mode-folders #sessionList { display: none !important; }
   padding: 8px 10px;
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   line-height: 1.5;
-  min-height: 300px;
+  min-height: min(300px, 40vh);
   resize: vertical;
   outline: none;
 }
@@ -319,15 +334,19 @@ body.pf-mode-folders #sessionList { display: none !important; }
 }
 .pf-btn:hover { background: var(--hover-bg, rgba(255,255,255,.07)); }
 .pf-btn:disabled { opacity: .5; cursor: default; }
-.pf-btn-primary { background: var(--accent, #4c8dff); border-color: var(--accent, #4c8dff); color: #fff; }
+.pf-btn-primary { background: var(--accent, #4c8dff); border-color: var(--accent, #4c8dff); color: var(--accent-contrast, #fff); }
 .pf-btn-primary:hover { filter: brightness(1.1); }
 
-/* phone: core's 44px minimum applies from 640px down (style.css:3227/3425) */
+/* Touch: actions always visible, and the header "+" makes the inline
+   "New chat here" row redundant. */
 @media (pointer: coarse) {
   .pf-group-actions { opacity: 1; pointer-events: auto; }
   .pf-row-more { opacity: 1; pointer-events: auto; }
+  .pf-newchat { display: none; }
 }
-@media (max-width: 640px) {
+/* 44px targets on any touch device (tablets included) and on narrow
+   viewports, matching core's phone minimum (style.css 640px block). */
+@media (pointer: coarse), (max-width: 640px) {
   .pf-row { min-height: 44px; }
   .pf-row-open { min-height: 44px; }
   .pf-row-more { width: 44px; height: 44px; }
@@ -335,4 +354,10 @@ body.pf-mode-folders #sessionList { display: none !important; }
   .pf-group-toggle { min-height: 44px; }
   .pf-newchat { min-height: 44px; }
   .pf-showmore, .pf-showless { min-height: 44px; }
+  .pf-dialog-x { min-width: 44px; min-height: 44px; }
+  .pf-btn { min-height: 44px; }
+}
+@media (max-width: 640px) {
+  .pf-overlay { padding: 12px; }
+  .pf-textarea { min-height: 160px; }
 }
