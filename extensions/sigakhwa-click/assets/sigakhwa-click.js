@@ -876,6 +876,10 @@
   function updateToolbar() {
     tb.raf = 0;
     if (Date.now() < tb.interactingUntil) return;   // a button press is in progress
+    // Typing in the composer moves the caret and fires selectionchange per keystroke; reading the
+    // document selection then forces a layout. A selection inside a text control is never transcript text.
+    var ae = document.activeElement, tag = ae && ae.tagName ? String(ae.tagName).toUpperCase() : '';
+    if (tag === 'TEXTAREA' || tag === 'INPUT') { hideToolbar(); return; }
     var info = selectionInfo();
     if (!info) { hideToolbar(); return; }
     showToolbar(info);
