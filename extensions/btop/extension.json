@@ -1,0 +1,76 @@
+{
+  "id": "btop",
+  "name": "btop",
+  "version": "0.1.0",
+  "author": "blabbleu",
+  "description": "A btop-style system monitor as its own WebUI page (rail icon). CPU graph with per-core meters and temps, memory/swap, disks with I/O, network up/down graphs, a Hermes box that groups agent/WebUI/cron/MCP/swe-pilot processes, and a sortable, filterable process table with tree view, details and signals. Data comes from a stdlib-only loopback sidecar reading /proc.",
+  "assets": {
+    "scripts": [
+      "assets/btop-core.js",
+      "assets/btop.js"
+    ],
+    "stylesheets": [
+      "assets/btop.css"
+    ]
+  },
+  "capabilities": [
+    "manifest-bundle",
+    "loopback-sidecar"
+  ],
+  "lifecycle": {
+    "webui_restart_required": false,
+    "sidecar_start_required": true,
+    "native_host_start_required": false,
+    "native_host_autostart": "none"
+  },
+  "post_install": {
+    "requires_local_app": true,
+    "local_app_label": "btop sidecar",
+    "summary": "Start the bundled sidecar (sidecar/hermes-btop-sidecar.service as a systemd user unit, or python3 -S sidecar.py) on 127.0.0.1:17797, then approve the proxy in Settings → Extensions → Diagnostics → Loopback sidecars. Requires WebUI auth on (token-v1)."
+  },
+  "permissions": {
+    "webui_api": {
+      "read": [
+        "/api/extensions/btop/sidecar/api/snapshot",
+        "/api/extensions/btop/sidecar/api/proc"
+      ],
+      "write": [
+        "/api/extensions/btop/sidecar/api/proc"
+      ]
+    },
+    "webui_navigation": true,
+    "dom": {
+      "owned": true,
+      "mutates_core_views": true
+    },
+    "storage": {
+      "owned": [
+        "prefs"
+      ],
+      "shared_webui_keys": []
+    },
+    "loopback_sidecar": true,
+    "native_host": false,
+    "filesystem": {
+      "arbitrary": false,
+      "serves_bundled_assets": true,
+      "note": "Sidecar reads /proc and /sys only; command lines are secret-masked before leaving it. Signals (TERM/INT/HUP/KILL/STOP/CONT) can be disabled with BTOP_SIGNALS=0."
+    },
+    "network_external": false
+  },
+  "sidecar": {
+    "type": "loopback",
+    "origin": "http://127.0.0.1:17797",
+    "health_path": "/health",
+    "proxy_auth": "token-v1",
+    "runtime": {
+      "kind": "vendored",
+      "path": "sidecar"
+    }
+  },
+  "screenshots": [
+    "screenshots/desktop-tree.png",
+    "screenshots/phone-hermes.png",
+    "screenshots/phone-top.png"
+  ]
+}
