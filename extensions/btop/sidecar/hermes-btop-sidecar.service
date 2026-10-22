@@ -1,13 +1,15 @@
 # btop sidecar — token-v1 loopback backend for the btop WebUI extension.
 # Reads /proc and /sys and serves snapshots on 127.0.0.1:17797. WebUI provisions
-# the proxy token in the state dir; the scaffold resolves it. No token in this unit.
+# the proxy token in its state dir; the scaffold resolves it. No token in this unit.
 #
-# User unit (sees every process, can signal only your own):
-#   cp hermes-btop-sidecar.service ~/.config/systemd/user/
+# Run it as the same user as Hermes WebUI (the token file is that user's, 0600):
+#   mkdir -p ~/.config/systemd/user
+#   cp ~/.hermes/webui/extensions/btop/sidecar/hermes-btop-sidecar.service ~/.config/systemd/user/
+#   systemctl --user daemon-reload
 #   systemctl --user enable --now hermes-btop-sidecar
-# System unit as root (can signal any process): scripts/install.py --service
-#   writes this file to /etc/systemd/system with %h resolved to absolute paths.
-# To disable process signals, add a drop-in with Environment=BTOP_SIGNALS=0.
+#   loginctl enable-linger "$USER"     # optional: keep it running without a login session
+# Signals act with this user's privileges. To turn them off:
+#   systemctl --user edit hermes-btop-sidecar   ->   [Service]  Environment=BTOP_SIGNALS=0
 [Unit]
 Description=btop sidecar (system monitor backend for the btop WebUI extension, token-v1)
 After=default.target

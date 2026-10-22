@@ -1,5 +1,10 @@
 /* btop for Hermes WebUI — page styles. Core tokens only so every skin and
-   light/dark theme applies; every class is prefixed hbt-. */
+   light/dark theme applies; every class is prefixed hbt-.
+
+   Colour roles: raw tokens (--success/--warning/--error/--info/--accent…) are
+   used for fills (meters, graphs, dots, borders). Text drawn in a role colour
+   uses --hbt-t-<role>, a per-skin variant the script computes so it reaches
+   5:1 on the actual background; before it is set, text falls back to --text. */
 
 /* ── main-view wiring ─────────────────────────────────────────────────────── */
 #mainBtop { display: none; }
@@ -8,14 +13,26 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 /* the right workspace panel belongs to chat; hide its edge handle on this page */
 .layout:has(main.main.showing-x-btop) > #btnWorkspacePanelEdgeToggle { display: none !important; }
 .hbt-side[hidden], .hbt-page [hidden] { display: none !important; }
+.hbt-probe { position: absolute; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; transition: none !important; }
 
+.hbt-page, .hbt-side {
+  --hbt-lo: var(--success, #3fb950);
+  --hbt-mid: var(--warning, #d29922);
+  --hbt-hi: var(--error, #f85149);
+  --hbt-title: var(--accent, #58a6ff);
+  /* text-safe role colours (set from script; readable fallback until then) */
+  --hbt-tx-accent: var(--hbt-t-accent, var(--text));
+  --hbt-tx-info: var(--hbt-t-info, var(--text));
+  --hbt-tx-success: var(--hbt-t-success, var(--text));
+  --hbt-tx-warning: var(--hbt-t-warning, var(--text));
+  --hbt-tx-error: var(--hbt-t-error, var(--text));
+  --hbt-tx-link: var(--hbt-t-link, var(--text));
+  --hbt-tx-accent2: var(--hbt-t-accent2, var(--text));
+  --hbt-tx-accent3: var(--hbt-t-accent3, var(--text));
+}
 .hbt-page {
   --hbt-gap: 10px;
   --hbt-line: color-mix(in srgb, var(--border, #333) 85%, var(--text, #ddd) 15%);
-  --hbt-title: var(--accent, #58a6ff);
-  --hbt-lo: var(--success, #3fb950);
-  --hbt-mid: var(--warning, #d29922);
-  --hbt-hi: var(--danger, #f85149);
   flex-direction: column;
   flex: 1 1 auto;
   min-width: 0;
@@ -32,7 +49,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-page b { font-weight: 600; }
 .hbt-dim { color: var(--muted); }
 .hbt-page code { font-family: inherit; color: var(--text2, var(--text)); background: var(--code-bg); padding: 0 4px; border-radius: 3px; word-break: break-all; }
-.hbt-page a { color: var(--link, var(--accent)); }
+.hbt-page a { color: var(--hbt-tx-link); }
 
 /* ── top bar ──────────────────────────────────────────────────────────────── */
 .hbt-top {
@@ -41,7 +58,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   background: var(--surface, var(--bg));
 }
 .hbt-brand { display: flex; align-items: baseline; gap: 10px; min-width: 0; }
-.hbt-logo { font-weight: 700; letter-spacing: .5px; color: var(--hbt-title); font-size: 14px; }
+.hbt-logo { font-weight: 700; letter-spacing: .5px; color: var(--hbt-tx-accent); font-size: 14px; }
 .hbt-host { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hbt-chips { display: flex; gap: 4px; flex-wrap: wrap; flex: 1 1 auto; }
 .hbt-chip, .hbt-btn {
@@ -49,22 +66,24 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   background: transparent; border: 1px solid var(--border); border-radius: 4px;
   padding: 2px 8px; line-height: 1.5; transition: background .12s, border-color .12s, color .12s;
 }
-.hbt-chip sup, .hbt-title sup { color: var(--hbt-title); font-size: 9px; margin-right: 1px; vertical-align: super; }
-.hbt-chip[aria-pressed="false"] { color: var(--muted); opacity: .6; text-decoration: line-through; }
+.hbt-chip sup, .hbt-title sup { color: var(--hbt-tx-accent); font-size: 9px; margin-right: 1px; vertical-align: super; }
+.hbt-chip[aria-pressed="false"] { color: var(--muted); text-decoration: line-through; }
 .hbt-chip:hover, .hbt-btn:hover { background: var(--hover-bg); border-color: var(--border2, var(--border)); }
-.hbt-btn[aria-pressed="true"] { border-color: var(--hbt-title); color: var(--hbt-title); }
+.hbt-btn[aria-pressed="true"] { border-color: var(--hbt-title); color: var(--hbt-tx-accent); }
+.hbt-chip:focus-visible, .hbt-btn:focus-visible, .hbt-hg:focus-visible, .hbt-side-g:focus-visible,
+.hbt-iface button:focus-visible, .hbt-tw:focus-visible { outline: 2px solid var(--hbt-title); outline-offset: 1px; }
 .hbt-ctl { display: flex; align-items: center; gap: 6px; margin-left: auto; }
 .hbt-live { display: inline-flex; align-items: center; gap: 6px; color: var(--muted); margin-right: 4px; }
-.hbt-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--hbt-lo); box-shadow: 0 0 0 0 var(--hbt-lo); animation: hbt-pulse 2s infinite; }
+.hbt-live i { width: 7px; height: 7px; border-radius: 50%; background: var(--hbt-lo); animation: hbt-pulse 2s infinite; }
 .hbt-live.hbt-bad i { background: var(--hbt-hi); animation: none; }
 .hbt-live.hbt-paused i { background: var(--hbt-mid); animation: none; }
 @keyframes hbt-pulse { 0% { opacity: 1; } 50% { opacity: .35; } 100% { opacity: 1; } }
 @media (prefers-reduced-motion: reduce) { .hbt-live i { animation: none; } }
 
 .hbt-notice {
-  margin: 8px 12px 0; padding: 8px 12px; border-radius: 6px;
+  margin: 8px 12px 0; padding: 8px 12px; border-radius: 6px; line-height: 1.6;
   border: 1px solid color-mix(in srgb, var(--hbt-hi) 50%, transparent);
-  background: color-mix(in srgb, var(--hbt-hi) 10%, transparent);
+  background: color-mix(in srgb, var(--hbt-hi) 8%, var(--bg));
 }
 .hbt-notice code { white-space: nowrap; }
 
@@ -96,12 +115,12 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-title { left: 10px; font-weight: 700; color: var(--text); text-transform: none; }
 .hbt-title-r { right: 10px; color: var(--muted); max-width: 70%; overflow: hidden; text-overflow: ellipsis; }
 .hbt-title-b { top: auto; bottom: -9px; right: 10px; color: var(--muted); }
-.hbt-cpu .hbt-title { color: var(--hbt-lo); }
-.hbt-mem .hbt-title { color: var(--hbt-mid); }
-.hbt-net .hbt-title { color: var(--info, var(--accent)); }
-.hbt-disk .hbt-title { color: var(--accent2, var(--accent)); }
-.hbt-hermes .hbt-title { color: var(--accent); }
-.hbt-proc .hbt-title { color: var(--hbt-hi); }
+.hbt-cpu .hbt-title { color: var(--hbt-tx-success); }
+.hbt-mem .hbt-title { color: var(--hbt-tx-warning); }
+.hbt-net .hbt-title { color: var(--hbt-tx-info); }
+.hbt-disk .hbt-title { color: var(--hbt-tx-accent2); }
+.hbt-hermes .hbt-title { color: var(--hbt-tx-accent); }
+.hbt-proc .hbt-title { color: var(--hbt-tx-error); }
 
 /* ── meters: segmented gradient bars ─────────────────────────────────────── */
 .hbt-meter {
@@ -112,8 +131,8 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 }
 .hbt-meter::before { content: ""; position: absolute; inset: 0; background: var(--muted); opacity: .22; }
 .hbt-meter i { position: absolute; inset: 0; background: var(--fill); clip-path: inset(0 calc(100% - var(--p, 0%)) 0 0); transition: clip-path .4s ease; }
-.hbt-m-info { --fill: var(--info, var(--accent)); }
-.hbt-m-accent { --fill: var(--accent); }
+.hbt-m-info { --fill: var(--info, #4dd0e1); }
+.hbt-m-accent { --fill: var(--accent, #58a6ff); }
 .hbt-m-ok { --fill: var(--hbt-lo); }
 @media (prefers-reduced-motion: reduce) { .hbt-meter i { transition: none; } }
 
@@ -122,7 +141,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-num { min-width: 3.4em; text-align: right; }
 .hbt-val { min-width: 6.5em; text-align: right; color: var(--text2, var(--text)); }
 .hbt-temp { min-width: 2.6em; text-align: right; color: var(--muted); }
-.hbt-spark { color: var(--hbt-lo); letter-spacing: -1px; white-space: pre; font-family: inherit; }
+.hbt-spark { color: var(--hbt-tx-success); letter-spacing: -1px; white-space: pre; font-family: inherit; }
 
 /* ── cpu ──────────────────────────────────────────────────────────────────── */
 .hbt-cpu-body { display: grid; grid-template-columns: minmax(0, 1fr) minmax(240px, 34%); gap: 14px; }
@@ -134,12 +153,23 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   background: color-mix(in srgb, var(--bg) 75%, transparent); font-weight: 600;
 }
 .hbt-graph-label.hbt-bottom { top: auto; bottom: 2px; }
-.hbt-cores { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.hbt-cores { display: flex; flex-direction: column; gap: 3px; min-width: 0; container: hbtcores / inline-size; }
 .hbt-core-total { padding-bottom: 3px; border-bottom: 1px dashed var(--border); margin-bottom: 2px; }
-.hbt-core-total .hbt-lbl { color: var(--hbt-lo); font-weight: 700; }
+.hbt-core-total .hbt-lbl { color: var(--hbt-tx-success); font-weight: 700; }
 .hbt-core-list { display: grid; grid-template-columns: repeat(var(--hbt-core-cols, 1), minmax(0, 1fr)); gap: 2px 12px; }
-.hbt-core .hbt-lbl { min-width: 2.4em; }
-.hbt-core .hbt-spark { min-width: 7ch; }
+/* a core row never pushes past its column: the meter shrinks, then clips */
+.hbt-core { min-width: 0; overflow: hidden; }
+.hbt-core .hbt-meter { min-width: 12px; }
+.hbt-core .hbt-lbl { min-width: 2.4em; flex: 0 0 auto; }
+.hbt-core .hbt-spark { min-width: 7ch; flex: 0 0 auto; }
+.hbt-core .hbt-num, .hbt-core .hbt-temp { flex: 0 0 auto; }
+@container hbtcores (max-width: 520px) {
+  .hbt-core-list[data-cols="3"] { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hbt-core-list:not([data-cols="1"]) .hbt-spark { display: none; }
+}
+@container hbtcores (max-width: 300px) {
+  .hbt-core-list { grid-template-columns: minmax(0, 1fr) !important; }
+}
 .hbt-cpu-foot { display: flex; flex-wrap: wrap; gap: 4px 14px; margin-top: auto; padding-top: 6px; color: var(--muted); }
 .hbt-cpu-foot b { color: var(--text); font-weight: 500; }
 
@@ -149,14 +179,16 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-net-body .hbt-graph-wrap { height: 54px; }
 .hbt-net-body .hbt-graph-wrap + .hbt-graph-wrap { border-top: 1px dashed var(--border); }
 .hbt-net-stats { margin-top: 6px; display: flex; flex-direction: column; gap: 1px; }
-.hbt-rx { color: var(--info, var(--accent)); }
-.hbt-tx { color: var(--accent); }
-.hbt-iface { display: inline-flex; align-items: center; gap: 2px; pointer-events: auto; }
+.hbt-rx { color: var(--hbt-tx-info); }
+.hbt-tx { color: var(--hbt-tx-accent); }
+.hbt-iface { display: inline-flex; align-items: center; gap: 2px; pointer-events: auto; overflow: visible; }
 .hbt-iface b { color: var(--text); font-weight: 600; padding: 0 3px; }
-.hbt-iface button { appearance: none; border: 0; background: none; color: var(--hbt-title); font: inherit; cursor: pointer; padding: 0 4px; }
+.hbt-iface button { position: relative; appearance: none; border: 0; background: none; color: var(--hbt-tx-accent); font: inherit; cursor: pointer; padding: 0 4px; }
 .hbt-disk-item + .hbt-disk-item { margin-top: 6px; padding-top: 6px; border-top: 1px dashed var(--border); }
 .hbt-disk-head { display: flex; gap: 8px; align-items: baseline; flex-wrap: wrap; }
 .hbt-disk-head .hbt-val { margin-left: auto; }
+.hbt-stalled { color: var(--hbt-tx-warning); border: 1px solid var(--hbt-mid); border-radius: 3px; padding: 0 5px; font-size: 11px; }
+.hbt-is-stalled .hbt-meter { opacity: .45; }
 .hbt-io { font-size: 11px; }
 .hbt-io-spark { display: flex; gap: 6px; align-items: center; margin-top: 6px; }
 .hbt-io-spark .hbt-spark { flex: 0 1 auto; overflow: hidden; }
@@ -172,15 +204,19 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   color: var(--text); font: inherit; padding: 1px 4px; cursor: pointer; text-align: left;
 }
 .hbt-hg:hover { background: var(--hover-bg); }
-.hbt-hg.hbt-on { border-color: var(--accent); }
+.hbt-hg.hbt-on { border-color: var(--hbt-title); }
 .hbt-hg-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hbt-dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--muted); flex: 0 0 auto; }
-.hbt-c-accent { --hbt-c: var(--accent, #58a6ff); } .hbt-c-info { --hbt-c: var(--info, #4dd0e1); }
-.hbt-c-success { --hbt-c: var(--success, #3fb950); } .hbt-c-warning { --hbt-c: var(--warning, #d29922); }
-.hbt-c-danger { --hbt-c: var(--danger, #f85149); } .hbt-c-link { --hbt-c: var(--link, #79c0ff); }
-.hbt-c-accent2 { --hbt-c: var(--accent2, #bc8cff); } .hbt-c-accent3 { --hbt-c: var(--accent3, #ff9bce); }
+.hbt-c-accent { --hbt-c: var(--accent, #58a6ff); --hbt-tc: var(--hbt-tx-accent); }
+.hbt-c-info { --hbt-c: var(--info, #4dd0e1); --hbt-tc: var(--hbt-tx-info); }
+.hbt-c-success { --hbt-c: var(--success, #3fb950); --hbt-tc: var(--hbt-tx-success); }
+.hbt-c-warning { --hbt-c: var(--warning, #d29922); --hbt-tc: var(--hbt-tx-warning); }
+.hbt-c-error { --hbt-c: var(--error, #f85149); --hbt-tc: var(--hbt-tx-error); }
+.hbt-c-link { --hbt-c: var(--link, #79c0ff); --hbt-tc: var(--hbt-tx-link); }
+.hbt-c-accent2 { --hbt-c: var(--accent2, #bc8cff); --hbt-tc: var(--hbt-tx-accent2); }
+.hbt-c-accent3 { --hbt-c: var(--accent3, #ff9bce); --hbt-tc: var(--hbt-tx-accent3); }
 .hbt-dot[class*="hbt-c-"] { background: var(--hbt-c); }
-.hbt-tag { padding: 0 6px; border-radius: 3px; border: 1px solid var(--hbt-c, var(--border)); color: var(--hbt-c, var(--text)); font-size: 11px; }
+.hbt-tag { padding: 0 6px; border-radius: 3px; border: 1px solid var(--hbt-c, var(--border)); color: var(--hbt-tc, var(--text)); font-size: 11px; }
 
 /* ── proc ─────────────────────────────────────────────────────────────────── */
 .hbt-proc-bar { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; margin-bottom: 6px; }
@@ -197,7 +233,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   color: var(--muted); padding: 2px 6px; cursor: pointer; user-select: none; white-space: nowrap;
   border-bottom: 1px solid var(--border);
 }
-.hbt-table th.hbt-sorted { color: var(--hbt-title); }
+.hbt-table th.hbt-sorted { color: var(--hbt-tx-accent); }
 .hbt-table th.hbt-sorted::after { content: attr(data-dir); margin-left: 3px; font-size: 9px; }
 .hbt-table td { padding: 1px 6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .hbt-c-pid { width: calc(8ch + 12px); text-align: right; color: var(--muted); }
@@ -215,27 +251,30 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-pr { cursor: pointer; }
 .hbt-pr:hover td { background: var(--hover-bg); }
 .hbt-pr.hbt-sel td { background: color-mix(in srgb, var(--accent) 22%, transparent); color: var(--text); }
-.hbt-pr.hbt-warm .hbt-c-cpu { color: var(--hbt-mid); }
-.hbt-pr.hbt-hot .hbt-c-cpu { color: var(--hbt-hi); font-weight: 600; }
+.hbt-pr.hbt-warm .hbt-c-cpu { color: var(--hbt-tx-warning); }
+.hbt-pr.hbt-hot .hbt-c-cpu { color: var(--hbt-tx-error); font-weight: 600; }
 .hbt-pr.hbt-dimrow td { opacity: .5; }
 .hbt-tree { color: var(--muted); white-space: pre; }
-.hbt-tw { appearance: none; border: 0; background: none; color: var(--hbt-title); font: inherit; padding: 0 2px 0 0; cursor: pointer; }
+.hbt-tw { position: relative; appearance: none; border: 0; background: none; color: var(--hbt-tx-accent); font: inherit; padding: 0 2px 0 0; cursor: pointer; }
 .hbt-empty { text-align: center; padding: 18px !important; }
 
 .hbt-detail {
   border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; margin-bottom: 8px;
-  background: color-mix(in srgb, var(--accent) 5%, transparent);
+  background: color-mix(in srgb, var(--accent) 5%, var(--bg));
 }
 .hbt-d-head { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
-.hbt-d-name { color: var(--hbt-title); }
+.hbt-d-name { color: var(--hbt-tx-accent); }
 .hbt-d-cpu { color: var(--muted); }
 .hbt-grow { flex: 1 1 auto; }
 .hbt-d-cmd { margin: 4px 0; color: var(--text2, var(--text)); word-break: break-all; max-height: 4.5em; overflow: auto; }
 .hbt-d-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1px 14px; }
 .hbt-d-grid > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hbt-sig { padding: 1px 7px; }
-.hbt-sig.hbt-danger { border-color: color-mix(in srgb, var(--hbt-hi) 60%, var(--border)); color: var(--hbt-hi); }
-.hbt-sig.hbt-armed { background: var(--hbt-hi); border-color: var(--hbt-hi); color: var(--accent-contrast, #fff); }
+.hbt-sig.hbt-danger { border-color: color-mix(in srgb, var(--hbt-hi) 60%, var(--border)); color: var(--hbt-tx-error); }
+.hbt-sig.hbt-armed {
+  border: 2px solid var(--hbt-hi); color: var(--hbt-tx-error); font-weight: 700;
+  background: color-mix(in srgb, var(--hbt-hi) 10%, var(--bg));
+}
 
 /* ── sidebar view ─────────────────────────────────────────────────────────── */
 .hbt-side-inner { padding: 10px 12px 16px; font-size: 12px; display: flex; flex-direction: column; gap: 8px; overflow-y: auto; height: 100%; box-sizing: border-box; }
@@ -243,7 +282,6 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-side-label { color: var(--muted); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; margin-top: 6px; }
 .hbt-side-sec { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
 .hbt-side-sec .hbt-row { font-family: var(--font-mono, monospace); font-variant-numeric: tabular-nums; }
-.hbt-side-sec .hbt-meter { --seg: repeating-linear-gradient(90deg, #000 0 5px, transparent 5px 7px); --fill: linear-gradient(90deg, var(--success), var(--warning) 65%, var(--danger)); }
 .hbt-side-g {
   display: flex; align-items: center; gap: 8px; width: 100%; appearance: none; background: none; border: 0;
   color: var(--text); font: inherit; padding: 3px 4px; border-radius: 4px; cursor: pointer; text-align: left;
@@ -252,6 +290,21 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-side-g .hbt-dim { margin-left: auto; font-family: var(--font-mono, monospace); font-size: 11px; }
 .hbt-side-keys { color: var(--muted); font-size: 11px; }
 .hbt-side-keys kbd { font-family: var(--font-mono, monospace); border: 1px solid var(--border); border-radius: 3px; padding: 0 4px; color: var(--text); }
+
+/* ── touch: 44 px targets ─────────────────────────────────────────────────── */
+@media (pointer: coarse) {
+  .hbt-chip, .hbt-btn { min-height: 44px; min-width: 44px; padding: 6px 12px; }
+  .hbt-filter input { min-height: 44px; font-size: 16px; }
+  .hbt-hg, .hbt-side-g { min-height: 44px; }
+  .hbt-table th { padding-top: 12px; padding-bottom: 12px; }
+  .hbt-pr td { padding-top: 7px; padding-bottom: 7px; }
+  /* inline controls inside border titles / tree prefixes keep their look but
+     get a 44 px hit area */
+  .hbt-iface button::after, .hbt-tw::after {
+    content: ""; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; transform: translate(-50%, -50%);
+  }
+  .hbt-iface { gap: 18px; }
+}
 
 /* ── responsive ───────────────────────────────────────────────────────────── */
 @media (max-width: 1100px) {

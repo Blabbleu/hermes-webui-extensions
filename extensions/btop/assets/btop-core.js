@@ -221,9 +221,69 @@
     return frac < 0.5 ? 0 : frac < 0.8 ? 1 : 2;
   }
 
+  /* ── colour contrast ───────────────────────────────────────────────────── */
+  /* Parse "#rgb", "#rrggbb", "rgb(a)(r, g, b[, a])", "rgb(r g b / a)" or
+     "color(srgb r g b)" into [r, g, b] (0..255), or null. */
+  function parseColor(s) {
+    s = String(s || '').trim().toLowerCase();
+    let m = /^#([0-9a-f]{3}|[0-9a-f]{6})$/.exec(s);
+    if (m) {
+      let h = m[1];
+      if (h.length === 3) h = h.split('').map((c) => c + c).join('');
+      return [0, 2, 4].map((i) => parseInt(h.slice(i, i + 2), 16));
+    }
+    m = /^rgba?\(\s*([\d.]+)[\s,]+([\d.]+)[\s,]+([\d.]+)/.exec(s);
+    if (m) return [m[1], m[2], m[3]].map((x) => clamp(Math.round(Number(x)), 0, 255));
+    m = /^color\(srgb\s+([\d.]+)\s+([\d.]+)\s+([\d.]+)/.exec(s);
+    if (m) return [m[1], m[2], m[3]].map((x) => clamp(Math.round(Number(x) * 255), 0, 255));
+    return null;
+  }
+
+  function luminance(rgb) {
+    const f = (v) => { v /= 255; return v <= 0.03928 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4); };
+    return 0.2126 * f(rgb[0]) + 0.7152 * f(rgb[1]) + 0.0722 * f(rgb[2]);
+  }
+
+  function contrast(a, b) {
+    const x = luminance(a);
+    const y = luminance(b);
+    return (Math.max(x, y) + 0.05) / (Math.min(x, y) + 0.05);
+  }
+
+  function toHex(rgb) {
+    return '#' + rgb.map((v) => clamp(Math.round(v), 0, 255).toString(16).padStart(2, '0')).join('');
+  }
+
+  /* Smallest step toward black (light background) or white (dark background)
+     that gives `fg` at least `min` contrast on `bg`. Keeps the hue family so
+     each box keeps its colour, but the text stays readable on every skin. */
+  function textSafe(fg, bg, min) {
+    min = min || 4.5;
+    if (!fg || !bg) return null;
+    if (contrast(fg, bg) >= min) return toHex(fg);
+    const target = luminance(bg) > 0.18 ? [0, 0, 0] : [255, 255, 255];
+    for (let p = 0.95; p > 0; p -= 0.05) {
+      const c = fg.map((v, i) => v * p + target[i] * (1 - p));
+      if (contrast(c, bg) >= min) return toHex(c);
+    }
+    return toHex(target);
+  }
+
+  /* Global keyboard shortcuts must not hijack focused controls. `ctx` says
+     where focus is: editable (input/textarea/select/contenteditable),
+     control (button/link/other focusable widget), foreign (focus is in core UI
+     outside the btop page, its sidebar view and the nav buttons). */
+  function shortcutAllowed(key, ctx) {
+    ctx = ctx || {};
+    if (ctx.editable || ctx.foreign) return false;
+    if (ctx.control && (key === ' ' || key === 'Enter' || key === 'Spacebar' || /^Arrow/.test(key))) return false;
+    return true;
+  }
+
   return {
     fmtBytes, fmtBits, fmtDuration, fmtUptime, clamp, mergeHistory, fitSeries,
     sparkline, niceCeil, sortProcs, parseFilter, matchProc, filterProcs, buildTree,
-    pickIface, stopIndex, SORT_KEYS,
+    pickIface, stopIndex, SORT_KEYS, parseColor, luminance, contrast, toHex, textSafe,
+    shortcutAllowed,
   };
 });

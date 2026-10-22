@@ -15,24 +15,22 @@
   let ext = null;
   try { ext = window.hermesExt && window.hermesExt.register ? window.hermesExt.register(EXT) : null; } catch (_) {}
   const settings = ext && ext.settings && ext.settings.supported ? ext.settings : null;
-  const storage = ext && ext.storage ? ext.storage : null;
-  const LS_KEY = 'hermes-btop-prefs';
+  const storage = ext && ext.storage ? ext.storage : null;   // extension-owned key "prefs" only
   const DEFAULT_PREFS = {
     boxes: { cpu: true, mem: true, net: true, disk: true, hermes: true, proc: true },
     sort: 'cpu', desc: true, tree: false, iface: null, filter: '',
   };
   function loadPrefs() {
     let p = null;
-    try { p = storage ? storage.get('prefs', null) : JSON.parse(localStorage.getItem(LS_KEY) || 'null'); } catch (_) {}
+    try { p = storage ? storage.get('prefs', null) : null; } catch (_) {}
     p = Object.assign({}, DEFAULT_PREFS, p || {});
     p.boxes = Object.assign({}, DEFAULT_PREFS.boxes, (p && p.boxes) || {});
     return p;
   }
   function savePrefs() {
-    try {
-      if (storage && storage.set('prefs', prefs)) return;
-      localStorage.setItem(LS_KEY, JSON.stringify(prefs));
-    } catch (_) {}
+    // Without a registered extension handle there is nowhere sanctioned to
+    // persist, so prefs just live for the page.
+    try { if (storage) storage.set('prefs', prefs); } catch (_) {}
   }
   function opt(name, fallback) {
     try { if (settings) { const v = settings.get(name); if (v !== undefined) return v; } } catch (_) {}
@@ -46,7 +44,7 @@
     active: false, paused: false, timer: null, inflight: false,
     boot: '', seq: 0, history: [], snap: null, error: null, lastOk: 0,
     procHist: new Map(), selected: null, detail: null, detailAt: 0,
-    collapsed: new Set(), confirm: null, ticks: 0, rows: [],
+    collapsed: new Set(), confirm: null, ticks: 0, rows: [], warming: false,
   };
 
   // ── tiny DOM helpers ──────────────────────────────────────────────────────
@@ -56,12 +54,35 @@
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
   function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
+
+  /* Live regions re-render every tick. Writing innerHTML would destroy a
+     focused control (keyboard users could never reach "confirm KILL?", and a
+     Space meant for it would land on the page and pause instead). So: skip the
+     write when nothing changed, and otherwise restore focus to the control
+     with the same identity in the new markup. */
+  const FOCUS_KEYS = ['sig', 'act', 'group', 'toggle', 'pick', 'boxToggle', 'sort'];
+  function focusKey(el) {
+    for (const k of FOCUS_KEYS) if (el.dataset && el.dataset[k] != null) return [k, el.dataset[k]];
+    return null;
+  }
+  function setHTML(el, html) {
+    if (!el || el.__hbtHTML === html) return;
+    const active = document.activeElement;
+    const key = active && el.contains(active) ? focusKey(active) : null;
+    el.innerHTML = html;
+    el.__hbtHTML = html;
+    if (key) {
+      const attr = 'data-' + key[0].replace(/[A-Z]/g, (c) => '-' + c.toLowerCase());
+      const next = Array.from(el.querySelectorAll('[' + attr + ']')).find((n) => n.getAttribute(attr) === key[1]);
+      if (next) { try { next.focus({ preventScroll: true }); } catch (_) { next.focus(); } }
+    }
+  }
   function meter(pct, kind) {
     const p = C.clamp(Number(pct) || 0, 0, 100);
     return '<span class="hbt-meter' + (kind ? ' hbt-m-' + kind : '') + '" style="--p:' + p.toFixed(1) + '%"><i></i></span>';
   }
   const ICON = '<svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M5 12h3l2-4 3 7 2-3h4"/><path d="M8 21h8"/><path d="M12 17v4"/></svg>';
-  const GROUP_COLORS = ['accent', 'info', 'success', 'warning', 'danger', 'link', 'accent2', 'accent3'];
+  const GROUP_COLORS = ['accent', 'info', 'success', 'warning', 'error', 'link', 'accent2', 'accent3'];
   const groupColor = new Map();
   function colorOf(group) {
     if (!group) return '';
@@ -204,7 +225,7 @@
   const isDesktop = () => (typeof _isDesktopWidth === 'function' ? _isDesktopWidth() : window.innerWidth >= 641);
   const sidebarCollapsed = () => (typeof _isSidebarCollapsed === 'function' ? _isSidebarCollapsed() : false);
 
-  function onNavClick(fromMobileNav) {
+  async function onNavClick(fromMobileNav) {
     if (st.active && isDesktop() && !fromMobileNav) {
       // same behaviour as core rail icons: clicking the active one toggles the sidebar
       if (sidebarCollapsed()) { if (typeof expandSidebar === 'function') expandSidebar(); }
@@ -212,15 +233,26 @@
       return;
     }
     if (isDesktop() && sidebarCollapsed() && !fromMobileNav && typeof expandSidebar === 'function') expandSidebar();
-    show();
+    await show();
     if (!isDesktop() && typeof closeMobileSidebar === 'function') closeMobileSidebar();
   }
 
-  function show() {
+  let coreSwitchPanel = null;   // Core's switchPanel, captured before wrapping
+
+  async function show() {
     const main = document.querySelector('main.main');
     if (!main || !page) return;
-    if (typeof _beforePanelSwitch === 'function') {
-      try { if (!_beforePanelSwitch('chat')) return; } catch (_) {}
+    if (!st.active) {
+      // Run Core's own panel transition first (to the chat base view). That is
+      // what stops Logs auto-refresh, closes the Kanban SSE, honours the
+      // unsaved-Settings guard and leaves _currentPanel truthful. Only then
+      // overlay the btop view on top of it.
+      const sw = coreSwitchPanel || window.switchPanel;
+      if (typeof sw === 'function') {
+        let ok = true;
+        try { ok = await sw.call(window, 'chat'); } catch (_) { ok = true; }
+        if (ok === false) return;      // e.g. Settings has unsaved changes
+      }
     }
     Array.from(main.classList).filter((c) => c.startsWith('showing-')).forEach((c) => main.classList.remove(c));
     main.classList.add('showing-' + PANEL);
@@ -249,17 +281,22 @@
     if (!st.active) return;
     const title = document.getElementById('appTitlebarTitle');
     const sub = document.getElementById('appTitlebarSub');
-    setText(title, 'System monitor');
+    if (title && !title.querySelector('input')) {
+      setText(title, 'System monitor');
+      title.ondblclick = null;            // no chat-title rename on this page
+    }
     if (sub) {
       const h = st.snap && st.snap.host ? st.snap.host.hostname : '';
       setText(sub, h);
-      sub.style.display = h ? '' : 'none';
+      sub.hidden = !h;                    // Core toggles the sub with `hidden`
     }
+    if (document.title !== 'System monitor') document.title = 'System monitor';
   }
 
   function wrapCore() {
     const orig = window.switchPanel;
     if (typeof orig === 'function' && !orig.__hbtWrapped) {
+      coreSwitchPanel = orig;
       const wrapped = function (name, opts) {
         opts = opts || {};
         if (st.active && name !== PANEL) {
@@ -285,6 +322,18 @@
       w.__hbtWrapped = true;
       window.newSession = w;
     }
+    // Core re-syncs the titlebar for the chat base view on session events;
+    // re-apply ours afterwards while the page is open.
+    const origTitle = window.syncAppTitlebar;
+    if (typeof origTitle === 'function' && !origTitle.__hbtWrapped) {
+      const t = function () {
+        const r = origTitle.apply(this, arguments);
+        if (st.active) syncTitle();
+        return r;
+      };
+      t.__hbtWrapped = true;
+      window.syncAppTitlebar = t;
+    }
   }
 
   // ── polling ───────────────────────────────────────────────────────────────
@@ -302,11 +351,18 @@
     const ctrl = typeof AbortController === 'function' ? new AbortController() : null;
     const to = setTimeout(() => { try { ctrl && ctrl.abort(); } catch (_) {} }, 9000);
     try {
-      const url = BASE + '/api/snapshot?since=' + st.seq + '&boot=' + encodeURIComponent(st.boot);
+      const needProcs = prefs.boxes.proc || prefs.boxes.hermes || isSideVisible();
+      const url = BASE + '/api/snapshot?since=' + st.seq + '&boot=' + encodeURIComponent(st.boot) + (needProcs ? '' : '&procs=0');
       const r = await fetch(url, { credentials: 'same-origin', cache: 'no-store', signal: ctrl ? ctrl.signal : undefined });
       let body = null;
       try { body = await r.json(); } catch (_) {}
-      if (!r.ok || !body || !body.now) throw Object.assign(new Error((body && (body.error || body.message)) || ('HTTP ' + r.status)), { status: r.status });
+      if (!r.ok || !body) throw Object.assign(new Error((body && (body.error || body.message)) || ('HTTP ' + r.status)), { status: r.status, hint: body && body.hint });
+      if (body.warming) {               // sidecar just started; first sample pending
+        st.warming = true; st.error = null; renderStatus();
+        return;
+      }
+      st.warming = false;
+      if (!body.now) throw Object.assign(new Error('empty snapshot'), { status: r.status });
       if (body.boot !== st.boot) { st.history = []; st.boot = body.boot; }
       st.history = C.mergeHistory(st.history, body.history, 600);
       st.seq = body.seq;
@@ -323,11 +379,15 @@
     } finally {
       clearTimeout(to);
       st.inflight = false;
-      if (st.active && !st.paused) schedule(st.error ? Math.min(10000, interval() * 3) : interval());
+      if (st.active && !st.paused) schedule(st.error ? Math.min(10000, interval() * 3) : st.warming ? 500 : interval());
     }
   }
 
   document.addEventListener('visibilitychange', () => { if (!document.hidden && st.active && !st.timer) schedule(0); });
+
+  function isSideVisible() {
+    return !!(side && side.classList.contains('active') && side.offsetParent !== null);
+  }
 
   function trackProcHist(procs) {
     const seen = new Set();
@@ -354,20 +414,24 @@
     renderDetail();
   }
 
-  async function sendSignal(pid, sig) {
+  async function sendSignal(pid, sig, start) {
     try {
       const r = await fetch(BASE + '/api/proc/' + pid + '/signal', {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ signal: sig }),
+        // `start` pins the exact process the user confirmed: the sidecar
+        // refuses (409) if the PID now belongs to a different process.
+        body: JSON.stringify({ signal: sig, start }),
       });
       const body = await r.json().catch(() => ({}));
-      toast(r.ok ? ('Sent SIG' + sig + ' to ' + pid) : ('Signal failed: ' + (body.error || ('HTTP ' + r.status))));
-    } catch (e) { toast('Signal failed: ' + (e.message || e)); }
+      if (r.ok) toast('Sent SIG' + sig + ' to ' + pid, 'success');
+      else toast('Signal failed: ' + (body.error || ('HTTP ' + r.status)), 'error');
+    } catch (e) { toast('Signal failed: ' + (e.message || e), 'error'); }
     loadDetail(pid);
   }
 
-  function toast(msg) {
-    if (typeof showToast === 'function') { try { showToast(msg, 2500); return; } catch (_) {} }
+  function toast(msg, type) {
+    // No duration: Core's defaults apply (errors stay up longer, with Copy/Dismiss).
+    if (typeof showToast === 'function') { try { showToast(msg, undefined, type); return; } catch (_) {} }
     console.log('[btop] ' + msg);
   }
 
@@ -379,13 +443,49 @@
     const cs = getComputedStyle(page || document.documentElement);
     const v = (n, d) => (cs.getPropertyValue(n) || '').trim() || d;
     palette = {
-      lo: v('--success', '#3fb950'), mid: v('--warning', '#d29922'), hi: v('--danger', '#f85149'),
+      lo: v('--success', '#3fb950'), mid: v('--warning', '#d29922'), hi: v('--error', '#f85149'),
       accent: v('--accent', '#58a6ff'), info: v('--info', '#58a6ff'), muted: v('--muted', '#8b949e'),
       border: v('--border', '#30363d'), text: v('--text', '#e6edf3'),
     };
     paletteAt = Date.now();
+    applyTextColors();
     return palette;
   }
+
+  /* Text drawn in a role colour (box titles, sorted header, hot CPU, tags…)
+     gets a per-skin "text-safe" variant: the smallest darken (light themes) or
+     lighten (dark themes) that reaches 5:1 on the actual background. Computed
+     from the live tokens, so it holds for every built-in and extension skin. */
+  const TEXT_ROLES = [['accent', '#58a6ff'], ['info', '#4dd0e1'], ['success', '#3fb950'], ['warning', '#d29922'],
+    ['error', '#f85149'], ['link', '#79c0ff'], ['accent2', '#bc8cff'], ['accent3', '#ff9bce']];
+  let probe = null;
+  function resolved(el, value) {
+    if (!probe) { probe = document.createElement('span'); probe.className = 'hbt-probe'; probe.setAttribute('aria-hidden', 'true'); }
+    if (probe.parentNode !== el) el.appendChild(probe);
+    probe.style.color = value;
+    return C.parseColor(getComputedStyle(probe).color);
+  }
+  function backgroundOf(el) {
+    // Resolve the background *token*, not the computed background-color: Core
+    // transitions background-color (0.15 s) on theme/skin change, so the
+    // computed value lags and a sample taken mid-transition is the old theme.
+    // Custom properties are not animated, so the token is always current.
+    const token = 'var(--bg)';   // .main-view and .panel-view both paint var(--bg)
+    return resolved(el, token) || C.parseColor(getComputedStyle(document.documentElement).getPropertyValue('--bg')) || [255, 255, 255];
+  }
+  function applyTextColors() {
+    [page, side].forEach((el) => {
+      if (!el) return;
+      const bg = backgroundOf(el);
+      TEXT_ROLES.forEach(([role, fallback]) => {
+        const fg = resolved(el, 'var(--' + role + ', ' + fallback + ')');
+        const safe = C.textSafe(fg, bg, 5);
+        if (safe && el.style.getPropertyValue('--hbt-t-' + role) !== safe) el.style.setProperty('--hbt-t-' + role, safe);
+      });
+    });
+    if (probe && probe.parentNode) probe.parentNode.removeChild(probe);
+  }
+  function refreshColors() { palette = null; colors(); }
 
   // ── graphs ────────────────────────────────────────────────────────────────
   function drawGraph(cv, series, o) {
@@ -466,24 +566,41 @@
     const err = st.error;
     live.classList.toggle('hbt-bad', !!err);
     live.classList.toggle('hbt-paused', st.paused);
-    setText(live.querySelector('span'), st.paused ? 'paused' : err ? 'offline' : 'live');
+    setText(live.querySelector('span'), st.paused ? 'paused' : err ? 'offline' : st.warming ? 'starting' : 'live');
     const n = F.notice;
     if (!n) return;
     if (!err) { n.hidden = true; return; }
-    const s = err.status;
-    let html;
-    if (s === 403 || s === 409 || s === 428) {
-      html = '<b>Sidecar proxy not approved.</b> Open <a href="#" data-act="open-ext">Settings → Extensions</a>, find <i>btop</i> and allow the sidecar proxy.';
-    } else if (s === 401 || s === 503) {
-      html = '<b>Sidecar auth token missing or mismatched.</b> Re-approve the proxy in <a href="#" data-act="open-ext">Settings → Extensions</a>, then restart the sidecar: <code>systemctl restart hermes-btop-sidecar</code>';
-    } else if (s === 502 || s === 504 || s === 404) {
-      html = '<b>Sidecar not reachable</b> on 127.0.0.1:17797. Start it with <code>systemctl start hermes-btop-sidecar</code>';
-    } else {
-      html = '<b>Can\'t reach the monitor:</b> ' + esc(err.message || err);
-    }
-    if (st.lastOk) html += ' <span class="hbt-dim">· last update ' + C.fmtDuration((Date.now() - st.lastOk) / 1000) + ' ago</span>';
-    n.innerHTML = html;
+    const ago = st.lastOk ? ' <span class="hbt-dim">· last update ' + C.fmtDuration((Date.now() - st.lastOk) / 1000) + ' ago</span>' : '';
+    setHTML(n, noticeHtml(err) + ago);
     n.hidden = false;
+  }
+
+  /* Always show what the proxy / sidecar actually said; add a next step only
+     when the status + message identify the cause. */
+  function noticeHtml(err) {
+    const s = err.status;
+    const msg = String(err.message || err);
+    const low = msg.toLowerCase();
+    const ext = '<a href="#" data-act="open-ext">Settings → Extensions</a>';
+    const unit = 'hermes-btop-sidecar';
+    let hint = '';
+    if (s === 403 && /authentication|password/.test(low)) {
+      hint = 'token-v1 sidecars need WebUI authentication on: set a password in Settings, then approve the proxy.';
+    } else if (s === 403 && /consent/.test(low)) {
+      hint = 'Approve it in ' + ext + ' → Diagnostics → Loopback sidecars → btop → <i>Approve proxy consent</i>. ' +
+        'Core only allows that while WebUI authentication (a password) is on.';
+    } else if (s === 409) {
+      hint = 'Check btop in ' + ext + ' (it may be disabled, or its sidecar declaration changed), then reload.';
+    } else if ((s === 401 || s === 503) && /token/.test(low)) {
+      hint = 'Re-approve the proxy in ' + ext + ', then restart the sidecar: <code>systemctl --user restart ' + unit + '</code>';
+    } else if (s === 502 && /too large/.test(low)) {
+      hint = 'The sidecar answered with more than the proxy allows. Update btop; this build caps responses at 448 KiB.';
+    } else if ((s === 502 || s === 504) && /reach|refused|timed? ?out|connect/.test(low)) {
+      hint = 'Is the sidecar running on 127.0.0.1:17797? <code>systemctl --user status ' + unit + '</code> · start: <code>systemctl --user start ' + unit + '</code>';
+    } else if (s === 404 && /not configured|not found/.test(low)) {
+      hint = 'btop isn\'t installed or enabled in ' + ext + '.';
+    }
+    return '<b>' + esc(msg) + '</b>' + (s ? ' <span class="hbt-dim">(HTTP ' + s + ')</span>' : '') + (hint ? '<br>' + hint : '');
   }
 
   function hostLine(snap) {
@@ -527,7 +644,9 @@
       return '<div class="hbt-core"><span class="hbt-lbl">C' + i + '</span><span class="hbt-spark">' + esc(spark) + '</span>' + meter(v) +
         '<span class="hbt-num">' + Math.round(v) + '%</span>' + temp + '</div>';
     }).join('');
-    F.cores.style.setProperty('--hbt-core-cols', cores.length > 16 ? 3 : cores.length > 6 ? 2 : 1);
+    const coreCols = cores.length > 16 ? 3 : cores.length > 6 ? 2 : 1;
+    F.cores.style.setProperty('--hbt-core-cols', coreCols);
+    F.cores.dataset.cols = String(coreCols);
     const l = (now.load || {}).load || [];
     F.cpuFoot.innerHTML = '<span>load <b>' + l.map((x) => x.toFixed(2)).join(' ') + '</b></span>' +
       '<span>usr <b>' + (cpu.user || 0).toFixed(1) + '</b> sys <b>' + (cpu.system || 0).toFixed(1) + '</b> io <b>' + (cpu.iowait || 0).toFixed(1) + '</b>' +
@@ -579,8 +698,9 @@
     const ws = C.sparkline(series('dw').slice(-24), 0, 24);
     F.disks.innerHTML = disks.map((d) => {
       const p = d.total ? (d.used * 100) / d.total : 0;
-      return '<div class="hbt-disk-item"><div class="hbt-disk-head"><b>' + esc(d.mount) + '</b><span class="hbt-dim">' + esc(d.dev) + ' · ' + esc(d.fs) + '</span>' +
-        '<span class="hbt-val">' + C.fmtBytes(d.used) + ' / ' + C.fmtBytes(d.total) + '</span></div>' +
+      const stalled = d.stalled ? '<span class="hbt-stalled" title="statvfs is not returning; showing the last known numbers">not responding</span>' : '';
+      return '<div class="hbt-disk-item' + (d.stalled ? ' hbt-is-stalled' : '') + '"><div class="hbt-disk-head"><b>' + esc(d.mount) + '</b><span class="hbt-dim">' + esc(d.dev) + ' · ' + esc(d.fs) + '</span>' + stalled +
+        '<span class="hbt-val">' + (d.total ? C.fmtBytes(d.used) + ' / ' + C.fmtBytes(d.total) : '–') + '</span></div>' +
         '<div class="hbt-row">' + meter(p, 'grad') + '<span class="hbt-num">' + Math.round(p) + '%</span></div>' +
         (d.read != null ? '<div class="hbt-io hbt-dim">r ' + C.fmtBytes(d.read, { rate: true }) + ' · w ' + C.fmtBytes(d.write, { rate: true }) + (d.busy ? ' · busy ' + d.busy + '%' : '') + '</div>' : '') +
         '</div>';
@@ -596,9 +716,9 @@
     let memSum = 0;
     groups.forEach((g) => { cpuSum += g.cpu; memSum += g.mem; });
     setText(F.hermesSum, (cpuSum / div).toFixed(1) + '% · ' + C.fmtBytes(memSum));
-    if (!groups.length) { F.hermes.innerHTML = '<div class="hbt-dim">no Hermes processes found</div>'; return; }
+    if (!groups.length) { setHTML(F.hermes, '<div class="hbt-dim">no Hermes processes found</div>'); return; }
     const active = (prefs.filter || '').trim().toLowerCase();
-    F.hermes.innerHTML = '<div class="hbt-hg-head"><span></span><span>group</span><span>procs</span><span>cpu</span><span>mem</span><span class="hbt-hg-spark-h"></span></div>' +
+    setHTML(F.hermes, '<div class="hbt-hg-head"><span></span><span>group</span><span>procs</span><span>cpu</span><span>mem</span><span class="hbt-hg-spark-h"></span></div>' +
       groups.map((g) => {
         const sp = C.sparkline(st.history.slice(-12).map((h) => (h.hg && h.hg[g.name]) || 0), 0, 12);
         const on = active === 'g:' + g.name;
@@ -606,7 +726,7 @@
           '<i class="hbt-dot hbt-c-' + colorOf(g.name) + '"></i><span class="hbt-hg-name">' + esc(g.name) + '</span>' +
           '<span>' + g.procs + '</span><span>' + (g.cpu / div).toFixed(1) + '%</span><span>' + C.fmtBytes(g.mem, { compact: true }) + '</span>' +
           '<span class="hbt-spark">' + esc(sp) + '</span></button>';
-      }).join('');
+      }).join(''));
   }
 
   function procRows(snap) {
@@ -624,7 +744,10 @@
     const table = F.procBody && F.procBody.closest('table');
     if (table) table.classList.toggle('hbt-tree-mode', !!prefs.tree);
     const shown = rows.length;
-    setText(F.procCount, (prefs.filter ? shown + '/' : '') + (snap.proc_total || 0) + ' procs');
+    const tr = snap.truncated;
+    const cut = tr && tr.procs ? ' · top ' + (snap.procs || []).length + ' sent' : '';
+    setText(F.procCount, (prefs.filter ? shown + '/' : '') + (snap.proc_total || 0) + ' procs' + cut);
+    if (F.procCount) F.procCount.title = cut ? 'The sidecar trimmed the quietest processes to stay under the WebUI proxy size limit.' : '';
     $$('th[data-sort]', page).forEach((th) => {
       th.classList.toggle('hbt-sorted', th.dataset.sort === prefs.sort);
       th.dataset.dir = th.dataset.sort === prefs.sort ? (prefs.desc ? '▼' : '▲') : '';
@@ -652,7 +775,7 @@
         '<td class="hbt-c-cpu"><span class="hbt-spark">' + esc(spark) + '</span>' + cpu.toFixed(1) + '</td></tr>';
     }
     if (!rows.length) html = '<tr><td colspan="7" class="hbt-dim hbt-empty">' + (prefs.filter ? 'no process matches “' + esc(prefs.filter) + '”' : 'waiting for process data…') + '</td></tr>';
-    F.procBody.innerHTML = html;
+    setHTML(F.procBody, html);
     renderDetail();
   }
 
@@ -660,14 +783,14 @@
     const el = F.detail;
     if (!el) return;
     const d = st.detail;
-    if (st.selected == null || !d) { el.hidden = true; el.innerHTML = ''; return; }
+    if (st.selected == null || !d) { el.hidden = true; setHTML(el, ''); return; }
     el.hidden = false;
     const live = (st.snap && (st.snap.procs || []).find((p) => p.pid === st.selected)) || null;
     const ncpu = (st.snap && st.snap.now && st.snap.now.ncpu) || 1;
     const div = opt('perCore', false) ? 1 : ncpu;
     if (d.gone) {
-      el.innerHTML = '<div class="hbt-d-head"><b>' + st.selected + '</b> <span class="hbt-dim">' + esc(d.error || 'process ended') + '</span>' +
-        '<button type="button" class="hbt-btn" data-act="close-detail">close</button></div>';
+      setHTML(el, '<div class="hbt-d-head"><b>' + st.selected + '</b> <span class="hbt-dim">' + esc(d.error || 'process ended') + '</span>' +
+        '<button type="button" class="hbt-btn" data-act="close-detail">close</button></div>');
       return;
     }
     const kv = (k, v) => (v == null || v === '' ? '' : '<div><span class="hbt-dim">' + k + '</span> ' + v + '</div>');
@@ -678,7 +801,7 @@
         (armed ? 'confirm ' + s + '?' : s.toLowerCase()) + '</button>';
     }).join('');
     const spark = C.sparkline((st.procHist.get(d.pid) || []).map((v) => v / div), 100 / (div === 1 ? 1 : 1), 10);
-    el.innerHTML =
+    setHTML(el,
       '<div class="hbt-d-head"><b>' + d.pid + '</b> <b class="hbt-d-name">' + esc(d.name) + '</b>' +
         (d.group ? ' <span class="hbt-tag hbt-c-' + colorOf(d.group) + '">' + esc(d.group) + '</span>' : '') +
         '<span class="hbt-d-cpu">' + (live ? (live.cpu / div).toFixed(1) + '% <span class="hbt-spark">' + esc(spark) + '</span>' : '') + '</span>' +
@@ -694,7 +817,7 @@
         kv('ctx', d.ctx_vol != null ? d.ctx_vol + ' / ' + d.ctx_invol : null) +
         kv('cwd', d.cwd ? '<code>' + esc(d.cwd) + '</code>' : null) + kv('exe', d.exe ? '<code>' + esc(d.exe) + '</code>' : null) +
         (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + c.pid + '">' + c.pid + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : '')) : '') +
-      '</div>';
+      '</div>');
   }
 
   function renderSide(snap) {
@@ -716,10 +839,10 @@
       (disk ? mrow('disk', (disk.used * 100) / disk.total, Math.round((disk.used * 100) / disk.total) + '%') : '');
     const groups = snap.groups || [];
     const div = opt('perCore', false) ? 1 : (now.ncpu || 1);
-    F.sideHermes.innerHTML = groups.length ? groups.map((g) =>
+    setHTML(F.sideHermes, groups.length ? groups.map((g) =>
       '<button type="button" class="hbt-side-g" data-group="' + esc(g.name) + '"><i class="hbt-dot hbt-c-' + colorOf(g.name) + '"></i>' + esc(g.name) +
       '<span class="hbt-dim">' + g.procs + ' · ' + (g.cpu / div).toFixed(1) + '% · ' + C.fmtBytes(g.mem, { compact: true }) + '</span></button>').join('')
-      : '<div class="hbt-dim">none running</div>';
+      : '<div class="hbt-dim">none running</div>');
   }
 
   // ── interactions ──────────────────────────────────────────────────────────
@@ -824,10 +947,11 @@
         const s = sig.dataset.sig;
         const pid = st.detail.pid;
         if (st.confirm && st.confirm.pid === pid && st.confirm.sig === s && Date.now() - st.confirm.at < 5000) {
+          const start = st.confirm.start;
           st.confirm = null;
-          sendSignal(pid, s);
+          sendSignal(pid, s, start);
         } else {
-          st.confirm = { pid, sig: s, at: Date.now() };
+          st.confirm = { pid, sig: s, at: Date.now(), start: st.detail.start };
           setTimeout(() => { if (st.confirm && Date.now() - st.confirm.at >= 5000) { st.confirm = null; renderDetail(); } }, 5100);
         }
         renderDetail();
@@ -876,6 +1000,7 @@
         if (g) {
           setFilter('g:' + g.dataset.group);
           if (!prefs.boxes.proc) toggleBox('proc');
+          if (!isDesktop() && typeof closeMobileSidebar === 'function') closeMobileSidebar();
         }
       });
     }
@@ -892,10 +1017,18 @@
     } catch (_) {}
   }
 
+  const CONTROL_SEL = 'button, a[href], summary, [role="button"], [role="link"], [role="menuitem"], [role="tab"], [role="checkbox"], [role="switch"], [tabindex]:not([tabindex="-1"])';
+  function focusContext(target) {
+    const t = target && target.nodeType === 1 ? target : null;
+    if (!t || t === document.body || t === document.documentElement) return {};
+    const editable = /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName) || t.isContentEditable;
+    const ours = (page && page.contains(t)) || (side && side.contains(t)) || !!t.closest('[data-panel="' + PANEL + '"]');
+    return { editable, control: !!t.closest(CONTROL_SEL), foreign: !ours && !t.closest('.rail, .sidebar-nav') };
+  }
+
   document.addEventListener('keydown', (e) => {
     if (!st.active || e.defaultPrevented || e.ctrlKey || e.metaKey || e.altKey) return;
-    const tag = (e.target && e.target.tagName) || '';
-    if (/^(INPUT|TEXTAREA|SELECT)$/.test(tag) || (e.target && e.target.isContentEditable)) return;
+    if (!C.shortcutAllowed(e.key, focusContext(e.target))) return;
     const k = e.key;
     if (k >= '1' && k <= '6') { toggleBox(BOXES[Number(k) - 1][0]); e.preventDefault(); return; }
     const map = { c: 'cpu', m: 'mem', p: 'pid', n: 'name' };
@@ -915,14 +1048,25 @@
     if (document.querySelector('main.main') && document.querySelector('.rail, .sidebar-nav') && typeof window.switchPanel === 'function') {
       mount();
       wrapCore();
+      // Skin / light-dark switches change the tokens: recompute text-safe colours.
+      if (typeof MutationObserver === 'function') {
+        let themeTimer = 0;
+        new MutationObserver(() => {
+          clearTimeout(themeTimer);
+          themeTimer = setTimeout(() => { refreshColors(); if (st.active) render(); }, 150);
+        }).observe(document.documentElement, { attributes: true, attributeFilter: ['class', 'data-skin', 'data-theme', 'style'] });
+      }
+      refreshColors();
       window.__hermesBtop = {
-        version: '0.1.0',
+        version: '0.2.0',
         open: () => onNavClick(true),
         close: () => window.switchPanel('chat'),
         state: () => ({ active: st.active, paused: st.paused, seq: st.seq, history: st.history.length,
           error: st.error ? { status: st.error.status, message: st.error.message } : null,
           procs: st.snap ? (st.snap.procs || []).length : 0, rows: st.rows.length, selected: st.selected,
-          prefs: JSON.parse(JSON.stringify(prefs)), interval: interval(), graph: opt('graph', 'dots') }),
+          prefs: JSON.parse(JSON.stringify(prefs)), interval: interval(), graph: opt('graph', 'dots'),
+          warming: st.warming, truncated: st.snap ? st.snap.truncated || null : null,
+          currentPanel: typeof _currentPanel === 'string' ? _currentPanel : null }),
       };
       return;
     }

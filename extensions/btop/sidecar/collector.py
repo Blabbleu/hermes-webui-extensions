@@ -4,11 +4,22 @@ Stdlib only (the sidecar runs under ``python3 -S``). Parsing functions are pure
 and take text so they can be unit-tested against fixtures; ``Collector`` owns
 the sampling state, the history ring and the snapshot payload.
 
-Privacy: command lines are run through ``mask_secrets`` before they leave this
-process, and the payload never contains environment variables.
+Threads:
+  * the sampler thread (``run_forever``) is the only writer of process and
+    history state; request threads only read it or wake the sampler;
+  * the disk worker (``DiskWorker``) does every ``statvfs`` on its own, with a
+    per-mount timeout, so a hung NFS/CIFS/FUSE mount never blocks sampling or
+    ``/health``.
+
+Privacy: command lines are read capped and masked per argv element
+(``masking.py``) before they leave this process. The payload never contains
+environment variables.
 """
 from __future__ import annotations
 
+import errno
+import gzip
+import json
 import os
 import re
 import signal
@@ -19,6 +30,8 @@ from collections import deque
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
+from masking import CMDLINE_READ_LIMIT, mask_cmdline
+
 try:
     import pwd
 except ImportError:  # pragma: no cover - non-POSIX
@@ -27,10 +40,16 @@ except ImportError:  # pragma: no cover - non-POSIX
 CLK_TCK = os.sysconf("SC_CLK_TCK") if hasattr(os, "sysconf") else 100
 PAGE_SIZE = os.sysconf("SC_PAGE_SIZE") if hasattr(os, "sysconf") else 4096
 HISTORY_LEN = 600          # samples kept server-side (10 min at 1 s)
-MAX_PROCS = 600            # rows per snapshot (proxy response cap is 512 KiB)
+MAX_PROCS = 600            # rows per snapshot before the byte budget applies
 CMD_LIST_CHARS = 400
 CMD_DETAIL_CHARS = 4000
 PROC_IDLE_SECS = 30        # stop per-process sampling when nobody is polling
+SNAPSHOT_BUDGET = 448 * 1024   # uncompressed JSON; Core's proxy rejects > 512 KiB
+MAX_NOW_IFACES = 64        # interfaces in the live view
+MAX_HIST_IFACES = 16       # interfaces kept per history sample (busiest)
+USER_CACHE_MAX = 4096
+DISK_PERIOD = 2.0
+DISK_TIMEOUT = 1.5
 
 REAL_FS = {
     "ext2", "ext3", "ext4", "xfs", "btrfs", "zfs", "f2fs", "vfat", "exfat",
@@ -42,30 +61,6 @@ ALLOWED_SIGNALS = {
     "TERM": signal.SIGTERM, "KILL": signal.SIGKILL, "INT": signal.SIGINT,
     "HUP": signal.SIGHUP, "STOP": signal.SIGSTOP, "CONT": signal.SIGCONT,
 }
-
-# ── secret masking ─────────────────────────────────────────────────────────
-_SECRET_TOKENS = re.compile(
-    r"(sk-(?:ant-|proj-)?[A-Za-z0-9_\-]{8,}|gh[pousr]_[A-Za-z0-9]{10,}|github_pat_[A-Za-z0-9_]{10,}"
-    r"|xox[abposr]-[A-Za-z0-9\-]{8,}|AKIA[0-9A-Z]{16}|AIza[0-9A-Za-z_\-]{20,}"
-    r"|eyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,})"
-)
-_SECRET_FLAGS = re.compile(
-    r"((?:^|[\s\"'])-{0,2}[A-Za-z_\-]*(?:api[_\-]?key|token|secret|passw(?:or)?d|passwd|auth|credential)"
-    r"[A-Za-z_\-]*(?:=|:|\s+))(\"[^\"]*\"|'[^']*'|\S+)",
-    re.IGNORECASE,
-)
-_URL_CREDS = re.compile(r"([A-Za-z][A-Za-z0-9+.\-]*://[^:/\s@]+:)[^@\s/]+@")
-_BEARER = re.compile(r"(Bearer\s+)[A-Za-z0-9._\-~+/=]{6,}", re.IGNORECASE)
-
-
-def mask_secrets(text: str) -> str:
-    if not text:
-        return text
-    text = _URL_CREDS.sub(r"\1***@", text)
-    text = _BEARER.sub(r"\1***", text)
-    text = _SECRET_FLAGS.sub(lambda m: m.group(1) + "***", text)
-    text = _SECRET_TOKENS.sub("***", text)
-    return text
 
 
 # ── pure parsers ───────────────────────────────────────────────────────────
@@ -200,7 +195,7 @@ def parse_proc_stat(text: str) -> Optional[Dict]:
         "prio": int(f[15]),
         "nice": int(f[16]),
         "threads": int(f[17]),
-        "start": int(f[19]),
+        "start": int(f[19]),      # field 22: start time in clock ticks since boot
         "vsize": int(f[20]),
         "rss": int(f[21]) * PAGE_SIZE,
     }
@@ -225,6 +220,25 @@ def parse_cpuinfo(text: str) -> Dict:
     return {"model": model, "mhz": round(sum(mhz) / len(mhz)) if mhz else None}
 
 
+def parse_mounts(text: str) -> List[Tuple[str, str, str]]:
+    """Real filesystems from /proc/self/mounts, first mount per device."""
+    seen = set()
+    out = []
+    for line in text.splitlines():
+        f = line.split()
+        if len(f) < 3:
+            continue
+        dev, mnt, fstype = f[0], f[1].replace("\\040", " "), f[2]
+        if fstype not in REAL_FS or dev in seen:
+            continue
+        if mnt.startswith(("/proc", "/sys", "/dev", "/run/credentials")):
+            continue
+        seen.add(dev)
+        out.append((dev, mnt, fstype))
+    out.sort(key=lambda d: (d[1] != "/", d[1]))
+    return out[:16]
+
+
 # ── Hermes process groups ──────────────────────────────────────────────────
 HERMES_RULES: List[Tuple[str, re.Pattern]] = [
     ("webui", re.compile(r"hermes-webui|/opt/hermes-webui/server\.py")),
@@ -238,7 +252,7 @@ HERMES_RULES: List[Tuple[str, re.Pattern]] = [
 
 
 def hermes_group(comm: str, cmd: str) -> Optional[str]:
-    hay = cmd or comm
+    hay = (cmd or comm)[:CMD_LIST_CHARS]
     for name, rx in HERMES_RULES:
         if rx.search(hay):
             return name
@@ -267,6 +281,73 @@ def assign_groups(procs: Dict[int, Dict]) -> None:
         procs[pid]["group"] = resolve(pid)
 
 
+# ── snapshot encoding under the proxy budget ───────────────────────────────
+def _dumps(obj) -> bytes:
+    return json.dumps(obj, separators=(",", ":"), ensure_ascii=False).encode("utf-8")
+
+
+def encode_snapshot(payload: Dict, budget: int = SNAPSHOT_BUDGET) -> Tuple[bytes, Optional[Dict]]:
+    """Serialize ``payload`` to at most ``budget`` bytes of JSON.
+
+    Over budget, drop the oldest history samples first (keeping the newest),
+    then trim process rows from the end (rows are sorted busiest first).
+    The result carries ``truncated = {history, procs, budget}`` so the client
+    can say what was cut. Returns (body, truncated-or-None).
+    """
+    body = _dumps(payload)
+    if len(body) <= budget:
+        return body, None
+    hist = list(payload.get("history") or [])
+    procs = payload.get("procs")
+    procs = list(procs) if procs is not None else None
+    out = dict(payload)
+    out["history"] = []
+    if procs is not None:
+        out["procs"] = []
+    out["truncated"] = {"history": 10 ** 9, "procs": 10 ** 9, "budget": budget}
+    room = budget - len(_dumps(out)) - 8
+    h_sizes = [len(_dumps(h)) + 1 for h in hist]
+    p_sizes = [len(_dumps(p)) + 1 for p in procs] if procs else []
+    # newest history first, as long as there is room after all procs
+    keep_h, used = 0, 0
+    room_h = room - sum(p_sizes)
+    for size in reversed(h_sizes):
+        if used + size > room_h:
+            break
+        used += size
+        keep_h += 1
+    if keep_h == 0 and hist and h_sizes[-1] <= room:
+        keep_h, used = 1, h_sizes[-1]
+    keep_p, used_p = 0, 0
+    for size in p_sizes:
+        if used + used_p + size > room:
+            break
+        used_p += size
+        keep_p += 1
+    out["history"] = hist[len(hist) - keep_h:] if keep_h else []
+    if procs is not None:
+        out["procs"] = procs[:keep_p]
+    trunc = {"history": len(hist) - keep_h, "procs": (len(procs) - keep_p) if procs else 0, "budget": budget}
+    out["truncated"] = trunc
+    body = _dumps(out)
+    if len(body) > budget:
+        # the fixed part alone is over budget (pathological): send the minimum
+        out["history"], out["now"] = [], {"t": (payload.get("now") or {}).get("t")}
+        if procs is not None:
+            out["procs"] = []
+        trunc.update(history=len(hist), procs=len(procs or []), now=True)
+        body = _dumps(out)
+    return body, trunc
+
+
+def maybe_gzip(body: bytes, accept_encoding: str) -> Tuple[bytes, Dict[str, str]]:
+    headers = {"Content-Type": "application/json", "Cache-Control": "no-store", "Vary": "Accept-Encoding"}
+    if "gzip" in (accept_encoding or "").lower() and len(body) > 1024:
+        headers["Content-Encoding"] = "gzip"
+        return gzip.compress(body, compresslevel=5), headers
+    return body, headers
+
+
 # ── helpers ────────────────────────────────────────────────────────────────
 def _read(path, default: str = "") -> str:
     try:
@@ -276,10 +357,10 @@ def _read(path, default: str = "") -> str:
         return default
 
 
-def _read_bytes(path) -> bytes:
+def _read_bytes(path, limit: Optional[int] = None) -> bytes:
     try:
         with open(path, "rb") as fh:
-            return fh.read()
+            return fh.read(limit) if limit else fh.read()
     except OSError:
         return b""
 
@@ -293,17 +374,97 @@ def _boottime() -> float:
         return float(_read("/proc/uptime", "0").split()[0] or 0)
 
 
+# ── disks: statvfs off the sampling path ───────────────────────────────────
+class DiskWorker:
+    """Runs statvfs per mount on short-lived threads with a timeout.
+
+    A mount whose previous statvfs is still blocked is reported with its last
+    known numbers and ``stalled: True`` and is not probed again until that
+    call returns, so a hung network mount costs one parked thread, not one per
+    round.
+    """
+
+    def __init__(self, proc_root: Path, period: float = DISK_PERIOD, timeout: float = DISK_TIMEOUT,
+                 statvfs=None):
+        self.proc = proc_root
+        self.period = period
+        self.timeout = timeout
+        self.statvfs = statvfs or os.statvfs
+        self.lock = threading.Lock()
+        self.result: List[Dict] = []
+        self.ready = threading.Event()
+        self._inflight: Dict[str, threading.Thread] = {}
+        self._last: Dict[str, Dict] = {}
+
+    def _probe(self, mnt: str, box: Dict) -> None:
+        try:
+            box["st"] = self.statvfs(mnt)
+        except OSError as exc:
+            box["err"] = exc
+
+    def poll_once(self) -> List[Dict]:
+        out = []
+        for dev, mnt, fstype in parse_mounts(_read(self.proc / "self" / "mounts")):
+            base = {"dev": os.path.basename(dev), "mount": mnt, "fs": fstype}
+            prev = self._inflight.get(mnt)
+            if prev is not None and prev.is_alive():
+                out.append({**self._last.get(mnt, base), "stalled": True})
+                continue
+            box: Dict = {}
+            th = threading.Thread(target=self._probe, args=(mnt, box), name="btop-statvfs", daemon=True)
+            th.start()
+            th.join(self.timeout)
+            if th.is_alive():
+                self._inflight[mnt] = th
+                out.append({**self._last.get(mnt, base), "stalled": True})
+                continue
+            self._inflight.pop(mnt, None)
+            st = box.get("st")
+            if st is None:
+                continue
+            total = st.f_blocks * st.f_frsize
+            if total <= 0:
+                continue
+            rec = {**base, "total": total, "used": total - st.f_bfree * st.f_frsize,
+                   "free": st.f_bavail * st.f_frsize}
+            self._last[mnt] = rec
+            out.append(rec)
+        with self.lock:
+            self.result = out
+        self.ready.set()
+        return out
+
+    def snapshot(self) -> List[Dict]:
+        with self.lock:
+            return [dict(d) for d in self.result]
+
+    def run_forever(self) -> None:
+        while True:
+            t0 = time.monotonic()
+            try:
+                self.poll_once()
+            except Exception:
+                self.ready.set()
+            time.sleep(max(0.2, self.period - (time.monotonic() - t0)))
+
+
 class Collector:
-    def __init__(self, proc_root: str = "/proc", sys_root: str = "/sys", interval: float = 1.0):
+    def __init__(self, proc_root: str = "/proc", sys_root: str = "/sys", interval: float = 1.0,
+                 statvfs=None):
         self.proc = Path(proc_root)
         self.sys = Path(sys_root)
         self.interval = max(0.25, float(interval))
         self.lock = threading.Lock()
+        self.cond = threading.Condition(self.lock)
+        self.ready = threading.Event()
+        self.ready_timeout = 3.0   # how long a request waits for the very first sample
+        self._wake = threading.Event()
         self.boot_id = f"{os.getpid()}-{int(time.time())}"
         self.seq = 0
         self.history: deque = deque(maxlen=HISTORY_LEN)
         self.last_poll = 0.0
         self.signals_enabled = os.getenv("BTOP_SIGNALS", "1") not in ("0", "false", "no")
+        self.disks = DiskWorker(self.proc, statvfs=statvfs)
         self._prev_stat = None
         self._prev_net = None
         self._prev_disk = None
@@ -328,8 +489,10 @@ class Collector:
             if line.startswith("PRETTY_NAME="):
                 distro = line.split("=", 1)[1].strip().strip('"')
         container = _read("/run/systemd/container").strip()
-        if not container and "container=" in _read_bytes(self.proc / "1" / "environ").decode("latin-1"):
-            container = "container"
+        if not container and os.path.exists("/.dockerenv"):
+            container = "docker"
+        if not container and "lxcfs" in _read(self.proc / "self" / "mounts"):
+            container = "lxc"
         return {"hostname": socket.gethostname(), "kernel": uname.release, "arch": uname.machine,
                 "distro": distro, "container": container}
 
@@ -340,6 +503,8 @@ class Collector:
                 name = pwd.getpwuid(uid).pw_name if pwd else str(uid)
             except KeyError:
                 name = str(uid)
+            if len(self._users) >= USER_CACHE_MAX:
+                self._users.clear()
             self._users[uid] = name
         return name
 
@@ -374,41 +539,14 @@ class Collector:
         cores = [v["c"] for v in vals if v["label"].lower().startswith("core")]
         return {"source": name, "cpu": pkg["c"], "crit": pkg.get("crit") or 100, "cores": cores[:ncores]}
 
-    # ── disks ──
-    def _disks(self) -> List[Dict]:
-        seen = set()
-        out = []
-        for line in _read(self.proc / "self" / "mounts").splitlines():
-            f = line.split()
-            if len(f) < 3:
-                continue
-            dev, mnt, fstype = f[0], f[1].replace("\\040", " "), f[2]
-            if fstype not in REAL_FS or dev in seen:
-                continue
-            if mnt.startswith(("/proc", "/sys", "/dev", "/run/credentials")):
-                continue
-            try:
-                st = os.statvfs(mnt)
-            except OSError:
-                continue
-            total = st.f_blocks * st.f_frsize
-            if total <= 0:
-                continue
-            seen.add(dev)
-            free = st.f_bavail * st.f_frsize
-            used = total - st.f_bfree * st.f_frsize
-            out.append({"dev": os.path.basename(dev), "mount": mnt, "fs": fstype,
-                        "total": total, "used": used, "free": free})
-        out.sort(key=lambda d: (d["mount"] != "/", d["mount"]))
-        return out[:16]
-
-    # ── processes ──
+    # ── processes (sampler thread only) ──
     def _sample_procs(self, now: float, mem_total: int) -> None:
         dt = (now - self._prev_proc_t) if self._prev_proc_t else None
         prev = self._prev_proc
         cur_ticks: Dict[int, Tuple[int, int]] = {}
         procs: Dict[int, Dict] = {}
         boot = _boottime()
+        me = os.getpid()
         try:
             names = os.listdir(self.proc)
         except OSError:
@@ -434,13 +572,12 @@ class Collector:
             key = (pid, st["start"])
             cached = self._cmd_cache.get(key)
             if cached is None:
-                raw = _read_bytes(base / "cmdline").replace(b"\x00", b" ").strip()
-                cmd = mask_secrets(raw.decode("utf-8", "replace"))
-                cached = (cmd, "btop" if pid == os.getpid() else hermes_group(st["comm"], cmd))
+                cmd = mask_cmdline(_read_bytes(base / "cmdline", CMDLINE_READ_LIMIT))
+                cached = (cmd[:CMD_LIST_CHARS], "btop" if pid == me else hermes_group(st["comm"], cmd))
                 self._cmd_cache[key] = cached
             cmd, own = cached
             procs[pid] = {
-                "pid": pid, "ppid": st["ppid"], "name": st["comm"], "cmd": cmd[:CMD_LIST_CHARS],
+                "pid": pid, "ppid": st["ppid"], "name": st["comm"], "cmd": cmd,
                 "user": self._user(uid), "state": st["state"], "threads": st["threads"],
                 "nice": st["nice"], "mem": st["rss"],
                 "memp": round(st["rss"] * 100.0 / mem_total, 1) if mem_total else 0.0,
@@ -448,7 +585,6 @@ class Collector:
                 "own_group": own,
             }
         assign_groups(procs)
-        # trim the cmdline cache to live processes
         live = {(pid, t[0]) for pid, t in cur_ticks.items()}
         if len(self._cmd_cache) > len(live) + 256:
             self._cmd_cache = {k: v for k, v in self._cmd_cache.items() if k in live}
@@ -471,7 +607,7 @@ class Collector:
         self.groups = sorted(({**g, "cpu": round(g["cpu"], 1)} for g in groups.values()),
                              key=lambda g: -g["mem"])
 
-    # ── main sample ──
+    # ── main sample (sampler thread only) ──
     def sample(self) -> None:
         now = time.time()
         stat = parse_stat(_read(self.proc / "stat"))
@@ -495,16 +631,17 @@ class Collector:
                      for i in range(ncores)]
 
         ifaces = {}
-        if dt and self._prev_net:
-            for name, (rx, tx) in net.items():
-                p = self._prev_net.get(name)
-                if p:
-                    ifaces[name] = {"rx": max(0, (rx - p[0]) / dt), "tx": max(0, (tx - p[1]) / dt),
-                                    "rx_total": rx, "tx_total": tx}
-        else:
-            ifaces = {n: {"rx": 0, "tx": 0, "rx_total": v[0], "tx_total": v[1]} for n, v in net.items()}
+        for name, (rx, tx) in net.items():
+            p = self._prev_net.get(name) if self._prev_net else None
+            r = t = 0.0
+            if dt and p:
+                r, t = max(0.0, (rx - p[0]) / dt), max(0.0, (tx - p[1]) / dt)
+            ifaces[name] = {"rx": r, "tx": t, "rx_total": rx, "tx_total": tx}
+        busiest = sorted(ifaces, key=lambda n: -(ifaces[n]["rx_total"] + ifaces[n]["tx_total"]))
+        ifaces = {n: ifaces[n] for n in busiest[:MAX_NOW_IFACES]}
+        hist_ifaces = [n for n in busiest if n != "lo"][:MAX_HIST_IFACES]
 
-        disks = self._disks()
+        disks = self.disks.snapshot()
         dio = {}
         if dt and self._prev_disk:
             for d in disks:
@@ -528,14 +665,14 @@ class Collector:
         ext = {n: v for n, v in ifaces.items() if n != "lo"}
         rx = sum(v["rx"] for v in ext.values())
         tx = sum(v["tx"] for v in ext.values())
-        with self.lock:
+        with self.cond:
             self.seq += 1
             h = {
                 "s": self.seq, "t": round(now, 2), "cpu": cpu["total"], "cores": cores,
                 "mem": round(mem["used"] * 100.0 / mem["total"], 1) if mem["total"] else 0,
                 "swap": round(mem["swap_used"] * 100.0 / mem["swap_total"], 1) if mem["swap_total"] else 0,
                 "rx": round(rx), "tx": round(tx), "dr": round(dr), "dw": round(dw),
-                "net": {n: [round(v["rx"]), round(v["tx"])] for n, v in ifaces.items()},
+                "net": {n: [round(ifaces[n]["rx"]), round(ifaces[n]["tx"])] for n in hist_ifaces},
                 "temp": temps.get("cpu"),
             }
             if polled and self.groups:
@@ -547,19 +684,24 @@ class Collector:
                 "procs_blocked": stat["procs_blocked"], "mem": mem, "net": ifaces, "disks": disks,
                 "temps": temps,
             }
+            self.cond.notify_all()
+        self.ready.set()
 
-    # ── payloads ──
+    # ── payloads (request threads) ──
     def snapshot(self, since: int = 0, boot: str = "", want_procs: bool = True) -> Dict:
-        first_poll = (time.time() - self.last_poll) >= PROC_IDLE_SECS
-        self.last_poll = time.time()
-        if want_procs and first_poll:
-            # cold start: take a process sample now so the table isn't empty
-            # (CPU% fills in on the next tick).
-            try:
-                self._sample_procs(time.time(), self.current.get("mem", {}).get("total", 0))
-            except Exception:
-                pass
-        with self.lock:
+        if not self.ready.wait(self.ready_timeout):
+            return {"boot": self.boot_id, "seq": 0, "warming": True, "interval": self.interval,
+                    "host": self._static, "now": {}, "history": [], "signals": self.signals_enabled}
+        now = time.time()
+        first_poll = (now - self.last_poll) >= PROC_IDLE_SECS
+        self.last_poll = now
+        with self.cond:
+            if want_procs and first_poll:
+                # Process sampling was idle: wake the sampler (the only thread
+                # that touches process state) and wait for one fresh sample.
+                target = self.seq + 1
+                self._wake.set()
+                self.cond.wait_for(lambda: self.seq >= target, timeout=2.5)
             if boot != self.boot_id:
                 since = 0
             hist = [h for h in self.history if h["s"] > since]
@@ -605,20 +747,19 @@ class Collector:
             uid = os.stat(base).st_uid
         except OSError:
             uid = -1
-        raw = _read_bytes(base / "cmdline").replace(b"\x00", b" ").strip().decode("utf-8", "replace")
-        children = []
-        for p in self.procs:
-            if p["ppid"] == pid:
-                children.append({"pid": p["pid"], "name": p["name"]})
+        procs = self.procs
+        children = [{"pid": p["pid"], "name": p["name"]} for p in procs if p["ppid"] == pid]
 
         def kb(key):
             v = status.get(key, "")
             return int(v.split()[0]) * 1024 if v and v.split()[0].isdigit() else None
 
         return {
-            "pid": pid, "ppid": st["ppid"], "name": st["comm"], "state": status.get("State", st["state"]),
+            "pid": pid, "start": st["start"], "ppid": st["ppid"], "name": st["comm"],
+            "state": status.get("State", st["state"]),
             "user": self._user(uid) if uid >= 0 else "?", "threads": st["threads"], "nice": st["nice"],
-            "prio": st["prio"], "cmd": mask_secrets(raw)[:CMD_DETAIL_CHARS],
+            "prio": st["prio"],
+            "cmd": mask_cmdline(_read_bytes(base / "cmdline", CMDLINE_READ_LIMIT))[:CMD_DETAIL_CHARS],
             "exe": link("exe"), "cwd": link("cwd"), "fds": fds,
             "rss": st["rss"], "vsize": st["vsize"], "swap": kb("VmSwap"), "peak": kb("VmHWM"),
             "age": max(0, int(_boottime() - st["start"] / CLK_TCK)),
@@ -627,10 +768,16 @@ class Collector:
             "ctx_vol": int(status["voluntary_ctxt_switches"]) if status.get("voluntary_ctxt_switches", "").isdigit() else None,
             "ctx_invol": int(status["nonvoluntary_ctxt_switches"]) if status.get("nonvoluntary_ctxt_switches", "").isdigit() else None,
             "children": children[:50],
-            "group": next((p.get("group") for p in self.procs if p["pid"] == pid), None),
+            "group": next((p.get("group") for p in procs if p["pid"] == pid), None),
         }
 
-    def send_signal(self, pid: int, name: str) -> Tuple[int, Dict]:
+    def send_signal(self, pid: int, name: str, start) -> Tuple[int, Dict]:
+        """Signal ``pid`` only if it is still the process that started at
+        ``start`` (clock ticks since boot, /proc/<pid>/stat field 22).
+
+        The pidfd pins the process: after ``pidfd_open`` the PID can no longer
+        be recycled under us, so check-then-signal is race-free.
+        """
         if not self.signals_enabled:
             return 403, {"error": "signals are disabled (BTOP_SIGNALS=0)"}
         sig = ALLOWED_SIGNALS.get(str(name).upper())
@@ -639,19 +786,48 @@ class Collector:
         if pid <= 1 or pid == os.getpid():
             return 400, {"error": "refusing to signal this process"}
         try:
-            os.kill(pid, sig)
+            start = int(start)
+        except (TypeError, ValueError):
+            return 400, {"error": "start (process start time) is required"}
+        pidfd_open = getattr(os, "pidfd_open", None)
+        pidfd_send = getattr(signal, "pidfd_send_signal", None)
+        if pidfd_open is None or pidfd_send is None:
+            return 501, {"error": "signals need pidfd support (Linux 5.3+, Python 3.9+)"}
+        try:
+            fd = pidfd_open(pid)
         except ProcessLookupError:
-            return 404, {"error": "no such process"}
+            return 404, {"error": "process has exited"}
+        except OSError as exc:
+            if exc.errno == errno.ENOSYS:
+                return 501, {"error": "signals need pidfd support (Linux 5.3+)"}
+            return 500, {"error": "could not open process"}
+        try:
+            st = parse_proc_stat(_read(self.proc / str(pid) / "stat"))
+            if st is None:
+                return 404, {"error": "process has exited"}
+            if st["start"] != start:
+                return 409, {"error": "PID now belongs to a different process; signal not sent"}
+            pidfd_send(fd, sig)
+        except ProcessLookupError:
+            return 404, {"error": "process has exited"}
         except PermissionError:
             return 403, {"error": "permission denied"}
+        finally:
+            os.close(fd)
         return 200, {"ok": True, "pid": pid, "signal": str(name).upper()}
 
-    # ── loop ──
+    # ── loops ──
+    def start(self) -> None:
+        threading.Thread(target=self.disks.run_forever, name="btop-disks", daemon=True).start()
+        threading.Thread(target=self.run_forever, name="btop-sampler", daemon=True).start()
+
     def run_forever(self) -> None:
+        self.disks.ready.wait(DISK_TIMEOUT + 0.5)   # first sample with disks if they answer quickly
         while True:
             t0 = time.monotonic()
             try:
                 self.sample()
             except Exception:  # keep sampling; never die on a transient /proc race
-                pass
-            time.sleep(max(0.05, self.interval - (time.monotonic() - t0)))
+                self.ready.set()
+            self._wake.wait(max(0.05, self.interval - (time.monotonic() - t0)))
+            self._wake.clear()
