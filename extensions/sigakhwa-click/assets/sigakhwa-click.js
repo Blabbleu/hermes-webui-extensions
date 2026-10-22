@@ -880,7 +880,24 @@
     if (!info) { hideToolbar(); return; }
     showToolbar(info);
   }
-  function scheduleToolbarUpdate() {
+  // Typing in a focused <textarea> or text <input> fires selectionchange at that control (it bubbles
+  // here) on every keystroke, and a selection inside it is never transcript text, so events from it
+  // skip the document-selection read and only hide the toolbar. Focus alone proves nothing about
+  // where the selection is: a reply can be selected while the composer keeps focus, and focusing a
+  // checkbox or button leaves it selected. Those changes fire at the document and are still checked.
+  var TEXT_INPUT_TYPES = /^(?:text|search|url|tel|email|password|number)$/;
+  function fromFocusedTextControl(e) {
+    var node = e && e.target;
+    if (!node || node.nodeType !== 1 || node !== document.activeElement) return false;
+    var tag = String(node.tagName || '').toUpperCase();
+    if (tag === 'TEXTAREA') return true;
+    return tag === 'INPUT' && TEXT_INPUT_TYPES.test(String(node.type || '').toLowerCase());
+  }
+  function scheduleToolbarUpdate(e) {
+    if (fromFocusedTextControl(e)) {
+      if (Date.now() >= tb.interactingUntil) hideToolbar();
+      return;
+    }
     if (tb.raf) return;
     var raf = typeof requestAnimationFrame === 'function' ? requestAnimationFrame : function (fn) { return setTimeout(fn, 16); };
     tb.raf = raf(updateToolbar);
@@ -927,7 +944,7 @@
     document.addEventListener('selectionchange', scheduleToolbarUpdate);
     document.addEventListener('mouseup', scheduleToolbarUpdate);
     document.addEventListener('touchend', scheduleToolbarUpdate);
-    document.addEventListener('keyup', function (e) { if (e && /Arrow|Shift|Home|End/.test(String(e.key || ''))) scheduleToolbarUpdate(); });
+    document.addEventListener('keyup', function (e) { if (e && /Arrow|Shift|Home|End/.test(String(e.key || ''))) scheduleToolbarUpdate(e); });
     document.addEventListener('scroll', hideToolbar, true);
     window.addEventListener('resize', function () { hideToolbar(); closePopover(); });
     bindAll();
