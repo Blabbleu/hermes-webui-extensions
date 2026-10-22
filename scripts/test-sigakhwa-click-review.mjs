@@ -626,3 +626,102 @@ test('maintainer review: latched keys are independent (a Space activation keeps 
     await wait(60);
   } finally { h.dom.window.close(); }
 });
+
+test('maintainer review: typing in a focused text field skips the selection read; a selected reply still shows the toolbar whatever has focus', async () => {
+  const h = harness();
+  try {
+    const d = h.w.document;
+    const toolbar = () => d.querySelector('[data-sigakhwa-toolbar]');
+    const visible = () => !!toolbar() && toolbar().classList.contains('is-visible');
+    const realGetSelection = h.w.getSelection.bind(h.w);
+    let reads = 0;
+    h.w.getSelection = () => { reads++; return realGetSelection(); };
+    const selectReply = () => {
+      const range = d.createRange();
+      range.selectNodeContents(d.getElementById('selected'));
+      range.getBoundingClientRect = () => ({ left: 10, top: 20, bottom: 40, width: 100, height: 20 });
+      const sel = realGetSelection();
+      sel.removeAllRanges();
+      sel.addRange(range);
+      sel.getRangeAt(0).getBoundingClientRect = range.getBoundingClientRect;
+    };
+    // Browsers fire a text control's selectionchange at the control (it bubbles); a document selection fires at the document.
+    const fire = async (target, type = 'selectionchange', init = {}) => {
+      target.dispatchEvent(type === 'keyup' ? new h.w.KeyboardEvent('keyup', { bubbles: true, ...init }) : new h.w.Event(type, { bubbles: true }));
+      await wait(40);   // flush the animation-frame update
+    };
+    const search = d.createElement('input');
+    search.type = 'search';
+    const box = d.createElement('input');
+    box.type = 'checkbox';
+    d.body.append(search, box);
+
+    selectReply();
+    await fire(d);
+    assert.ok(visible(), 'positive control: a settled reply selection shows the toolbar');
+
+    // Keystrokes and caret keys in a focused composer / text input: no document-selection read, toolbar hidden.
+    for (const field of [h.msg, search]) {
+      selectReply();
+      await fire(d);
+      assert.ok(visible());
+      field.focus();
+      await wait(40);   // jsdom fires a document selectionchange on focus; Chromium fires it at the field
+      reads = 0;
+      await fire(field);
+      assert.equal(reads, 0, field.tagName + ' keystroke must not read the document selection');
+      assert.equal(visible(), false, 'the toolbar hides once the selection moves into the ' + field.tagName);
+      await fire(field, 'keyup', { key: 'ArrowLeft' });
+      assert.equal(reads, 0, 'caret keys in the ' + field.tagName + ' must not read the document selection');
+      field.blur();
+    }
+
+    // A reply selected while the composer keeps focus fires at the document and is still offered;
+    // the next keystroke in the composer hides it again without a read.
+    h.msg.focus();
+    await wait(40);
+    selectReply();
+    reads = 0;
+    await fire(d);
+    assert.ok(reads > 0, 'a document selection change is validated');
+    assert.ok(visible(), 'a reply selection with the composer focused still shows the toolbar');
+    reads = 0;
+    await fire(h.msg);
+    assert.equal(reads, 0);
+    assert.equal(visible(), false, 'a keystroke in the composer hides the toolbar');
+    h.msg.blur();
+    await wait(40);
+
+    // An unfocused text field's own selectionchange cannot hide the toolbar.
+    selectReply();
+    await fire(d);
+    assert.ok(visible());
+    await fire(search);
+    assert.ok(visible(), 'an unfocused field does not hide the toolbar');
+
+    // Tab to a checkbox and release Shift: the reply is still selected, so the toolbar stays.
+    box.focus();
+    await wait(40);
+    selectReply();   // Chromium keeps the reply selected when a checkbox takes focus; jsdom drops it, so select again
+    await fire(d);
+    assert.ok(visible());
+    await fire(box, 'keyup', { key: 'Shift' });
+    assert.ok(visible(), 'a focused checkbox keeps the toolbar for a still-selected reply');
+    box.blur();
+    await wait(40);
+
+    // A toolbar press in progress survives a composer event and still sends its quick-ask.
+    h.msg.focus();
+    await wait(40);
+    selectReply();
+    await fire(d);
+    assert.ok(visible());
+    const btn = toolbar().querySelector('[data-sigakhwa-template="explain"]');
+    gesture(h, btn, 'pointerdown');
+    await fire(h.msg);
+    assert.ok(visible(), 'a press in progress keeps the toolbar and its text');
+    gesture(h, btn);
+    await wait(0);
+    assert.deepEqual(h.calls, [h.api.renderTemplate('explain', 'Some selected text')]);
+  } finally { h.dom.window.close(); }
+});
