@@ -778,6 +778,15 @@
     return C.sortProcs(C.filterProcs(procs, prefs.filter), prefs.sort, prefs.desc);
   }
 
+  // Tree prefix = ancestor guides ("│ " / "  " per level) + this row's branch
+  // ("├─" / "└─"). The guides go in their own span so phones can draw them at
+  // half width (see .hbt-lead) without changing the prefix text.
+  function treePrefix(prefix) {
+    const s = String(prefix || '');
+    if (s.length <= 2) return esc(s);
+    return '<span class="hbt-lead">' + esc(s.slice(0, -2)) + '</span>' + esc(s.slice(-2));
+  }
+
   function renderProcs(snap) {
     const ncpu = (snap.now && snap.now.ncpu) || 1;
     const perCore = !!opt('perCore', false);
@@ -791,7 +800,10 @@
     const sent = (snap.procs || []).length;
     // Say it on the page, not only in a tooltip (touch has no hover).
     const cut = tr && tr.procs ? ' · busiest ' + sent + ' shown' : '';
-    setText(F.procCount, (prefs.filter ? shown + '/' : '') + (snap.proc_total || 0) + ' procs' + cut);
+    // " procs" sits in its own span so narrow phones can drop it while the
+    // "busiest N shown" suffix needs the room (CSS, .hbt-pc-cut).
+    setHTML(F.procCount, (prefs.filter ? shown + '/' : '') + (snap.proc_total || 0) + '<span class="hbt-pc-word"> procs</span>' + esc(cut));
+    if (F.procCount) F.procCount.classList.toggle('hbt-pc-cut', !!cut);
     if (F.procCount) F.procCount.title = cut ? 'The sidecar trimmed the quietest processes to stay under the WebUI proxy size limit.' : '';
     $$('th[data-sort]', page).forEach((th) => {
       th.classList.toggle('hbt-sorted', th.dataset.sort === prefs.sort);
@@ -807,7 +819,7 @@
       if (p.dimmed) cls.push('hbt-dimrow');
       if (cpu >= 50) cls.push('hbt-hot'); else if (cpu >= 10) cls.push('hbt-warm');
       const tw = prefs.tree
-        ? '<span class="hbt-tree">' + esc(p.prefix || '') + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + p.pid + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + (p.collapsed ? '[+]' : '[-]') + '</button>' : '') + '</span>'
+        ? '<span class="hbt-tree">' + treePrefix(p.prefix) + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + p.pid + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + '<span class="hbt-twb">[</span>' + (p.collapsed ? '+' : '-') + '<span class="hbt-twb">]</span></button>' : '') + '</span>'
         : '';
       const dot = p.group ? '<i class="hbt-dot hbt-c-' + colorOf(p.group) + '" title="' + esc(p.group) + '"></i>' : '';
       html += '<tr class="' + cls.join(' ') + '" data-pid="' + p.pid + '">' +
@@ -850,7 +862,7 @@
     }
     // An armed confirm belongs to the exact process it was armed on.
     if (st.confirm && (st.confirm.pid !== d.pid || st.confirm.start !== d.start)) st.confirm = null;
-    const kv = (k, v) => (v == null || v === '' ? '' : '<div><span class="hbt-dim">' + k + '</span> ' + v + '</div>');
+    const kv = (k, v, wide) => (v == null || v === '' ? '' : '<div' + (wide ? ' class="hbt-d-wide"' : '') + '><span class="hbt-dim">' + k + '</span> ' + v + '</div>');
     const sigs = st.snap && st.snap.signals ? ['TERM', 'INT', 'HUP', 'KILL', (String(d.state || '').startsWith('T') ? 'CONT' : 'STOP')] : [];
     setHTML(el,
       '<div class="hbt-d-head" data-for-pid="' + d.pid + '" data-for-start="' + esc(d.start) + '"><b>' + d.pid + '</b> <b class="hbt-d-name">' + esc(d.name) + '</b>' +
@@ -879,8 +891,10 @@
       kv('swap', d.swap ? C.fmtBytes(d.swap) : null) + kv('fds', d.fds) +
       kv('io r/w', d.io_read != null ? C.fmtBytes(d.io_read) + ' / ' + C.fmtBytes(d.io_write) : null) +
       kv('ctx', d.ctx_vol != null ? d.ctx_vol + ' / ' + d.ctx_invol : null) +
-      kv('cwd', d.cwd ? '<code>' + esc(d.cwd) + '</code>' : null) + kv('exe', d.exe ? '<code>' + esc(d.exe) + '</code>' : null) +
-      (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + c.pid + '">' + c.pid + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : '')) : ''));
+      // paths and the child list span the row and wrap: an ellipsis with no
+      // tooltip left them unreadable on touch screens
+      kv('cwd', d.cwd ? '<code>' + esc(d.cwd) + '</code>' : null, true) + kv('exe', d.exe ? '<code>' + esc(d.exe) + '</code>' : null, true) +
+      (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + c.pid + '">' + c.pid + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : ''), true) : ''));
   }
 
   function renderSide(snap) {
@@ -1138,7 +1152,7 @@
       }
       refreshColors();
       window.__hermesBtop = {
-        version: '0.2.0',
+        version: '0.2.1',
         open: () => onNavClick(true),
         close: () => window.switchPanel('chat'),
         state: () => ({ active: st.active, paused: st.paused, seq: st.seq, history: st.history.length,

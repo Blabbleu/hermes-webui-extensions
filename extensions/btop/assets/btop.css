@@ -257,7 +257,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-tree { color: var(--muted); white-space: pre; }
 .hbt-tw { position: relative; appearance: none; border: 0; background: none; color: var(--hbt-tx-accent); font: inherit; padding: 0 2px 0 0; cursor: pointer; }
 .hbt-empty { text-align: center; padding: 18px !important; }
-.hbt-table td.hbt-empty { white-space: normal; text-overflow: clip; }   /* the hint wraps instead of ellipsizing */
+.hbt-table td.hbt-empty { white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }   /* the hint wraps, long filter tokens included */
 
 .hbt-detail {
   border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; margin-bottom: 8px;
@@ -270,6 +270,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-d-cmd { margin: 4px 0; color: var(--text2, var(--text)); word-break: break-all; max-height: 4.5em; overflow: auto; }
 .hbt-d-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1px 14px; }
 .hbt-d-grid > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbt-d-grid > .hbt-d-wide { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }   /* cwd, exe, children: whole value, wrapped */
 .hbt-sig { padding: 1px 7px; }
 .hbt-sig.hbt-danger { border-color: color-mix(in srgb, var(--hbt-hi) 60%, var(--border)); color: var(--hbt-tx-error); }
 .hbt-sig.hbt-armed {
@@ -344,6 +345,20 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   .hbt-hg-head, .hbt-hg { grid-template-columns: 12px minmax(5em, 1fr) 3em 4.2em 4.2em; }
   .hbt-hg .hbt-spark, .hbt-hg-spark-h { display: none; }
   .hbt-d-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hbt-d-grid > div { white-space: normal; overflow-wrap: anywhere; }   /* no hover on touch: wrap rather than ellipsize */
   .hbt-title-r { max-width: 62%; }
   .hbt-proc .hbt-title-r { max-width: calc(100% - 84px); }   /* room for "N procs · busiest N shown" next to "proc" */
+  /* Give the program column what the fixed columns don't need here: pids are
+     at most 7 digits (pid_max 4194304) and the cpu cell is a bare "100.0"
+     once the sparkline is hidden. */
+  .hbt-c-pid { width: calc(7ch + 12px); }
+  .hbt-c-cpu { width: calc(5ch + 20px); }
+  /* Tree view: ancestor guides at half width and the toggle without its
+     brackets; the 44 px hit area is the ::after above, not the glyph. */
+  .hbt-tree-mode .hbt-lead { letter-spacing: -.5ch; }
+  .hbt-twb { display: none; }
+}
+@media (max-width: 420px) {
+  /* "25/1024 · busiest 400 shown" fits a 320 px phone; with " procs" it clips */
+  .hbt-pc-cut .hbt-pc-word { display: none; }
 }

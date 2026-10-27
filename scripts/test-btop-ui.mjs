@@ -59,13 +59,13 @@ function setup() {
     let status = 200;
     let body;
     if (url.endsWith('/signal')) { h.posts.push(JSON.parse(opts.body)); body = { ok: true }; }
-    else if (url.includes('/api/proc/')) body = { pid: 42, start: h.start, name: 'busy', state: 'R', cmd: 'busy --loop', age: 5, children: [] };
+    else if (url.includes('/api/proc/')) body = Object.assign({ pid: 42, start: h.start, name: 'busy', state: 'R', cmd: 'busy --loop', age: 5, children: [] }, h.detail || {});
     else if (h.fail) { status = h.fail.status; body = { error: h.fail.error }; }
     else {
       body = { boot: 'b', seq: ++seq, signals: true, host: { hostname: 'box' }, proc_total: 9, truncated: h.truncated,
         now: { cpu: { total: h.cpu }, cores: [h.cpu], ncpu: 1, load: { load: [0, 0, 0] }, mem: {}, disks: [], net: {} },
         history: [{ s: seq, cpu: h.cpu }],
-        procs: [{ pid: 42, ppid: 1, name: 'busy', cmd: 'busy --loop', user: 'u', cpu: h.cpu, mem: 1, threads: 1 }], groups: [] };
+        procs: h.procs || [{ pid: 42, ppid: 1, name: 'busy', cmd: 'busy --loop', user: 'u', cpu: h.cpu, mem: 1, threads: 1 }], groups: [] };
     }
     return { ok: status < 400, status, json: async () => body };
   };
@@ -221,4 +221,56 @@ test('glyph buttons have names; trimmed process list says so on the page', async
   filter.value = 'nomatch';
   filter.dispatchEvent(new h.w.Event('input', { bubbles: true }));
   assert.match(h.$('.hbt-empty').textContent, /among the busiest 1 shown; quieter processes were trimmed/);
+});
+
+// ── phone layout hooks: the CSS drops or compresses these spans at narrow
+//    widths, so the markup must carry them while the visible text stays the same
+
+test('" procs" sits in a droppable span only while the list is trimmed', async () => {
+  const h = setup();
+  await h.w.__hermesBtop.open();
+  await h.run();
+  const pc = h.$('[data-f="procCount"]');
+  assert.equal(pc.textContent, '9 procs');
+  assert.ok(!pc.classList.contains('hbt-pc-cut'), 'untrimmed: nothing to make room for');
+  h.truncated = { procs: 400, history: 0, budget: 458752 };
+  await h.run();
+  assert.equal(pc.textContent, '9 procs · busiest 1 shown', 'text unchanged for screen readers and tests');
+  assert.ok(pc.classList.contains('hbt-pc-cut'));
+  assert.equal(pc.querySelector('.hbt-pc-word').textContent, ' procs');
+  h.truncated = null;
+  await h.run();
+  assert.ok(!pc.classList.contains('hbt-pc-cut'), 'class clears when the cut goes away');
+});
+
+test('tree guides and toggle brackets are spans; the drawn prefix text is unchanged', async () => {
+  const h = setup();
+  const p = (pid, ppid, name) => ({ pid, ppid, name, cmd: name, user: 'u', cpu: 1, mem: 1, threads: 1 });
+  h.procs = [p(1, 0, 'init'), p(42, 1, 'busy'), p(43, 42, 'kid'), p(44, 43, 'grandkid')];
+  await h.w.__hermesBtop.open();
+  await h.run();
+  h.$('[data-act="tree"]').click();
+  await h.run();
+  const cell = (pid) => h.$('tr[data-pid="' + pid + '"] .hbt-tree');
+  assert.equal(cell(42).textContent, '└─[-]', 'depth one: branch + toggle, no guide span');
+  assert.equal(cell(42).querySelector('.hbt-lead'), null);
+  assert.equal(cell(44).textContent, '    └─', 'depth three: two levels of guides, then the branch');
+  assert.equal(cell(44).querySelector('.hbt-lead').textContent, '    ');
+  const tw = h.$('tr[data-pid="42"] .hbt-tw');
+  assert.equal(tw.textContent, '[-]');
+  assert.equal(tw.querySelectorAll('.hbt-twb').length, 2, 'brackets are separate so phones can hide them');
+  assert.equal(tw.getAttribute('aria-label'), 'Collapse busy');
+});
+
+test('detail: cwd, exe and children span the row (wrapped, not ellipsized)', async () => {
+  const h = setup();
+  h.detail = { cwd: '/srv/' + 'deep/'.repeat(20), exe: '/usr/bin/busy', children: [{ pid: 43, name: 'kid' }], user: 'u' };
+  await h.w.__hermesBtop.open();
+  await h.run();
+  h.$('tr[data-pid="42"]').click();
+  await flush();
+  const wide = [...h.w.document.querySelectorAll('[data-d="grid"] .hbt-d-wide')].map((e) => e.textContent.split(' ')[0]);
+  assert.deepEqual(wide, ['cwd', 'exe', 'children']);
+  const user = [...h.w.document.querySelectorAll('[data-d="grid"] > div')].find((e) => e.textContent.startsWith('user'));
+  assert.ok(user && !user.classList.contains('hbt-d-wide'), 'short fields keep the two-column grid');
 });
