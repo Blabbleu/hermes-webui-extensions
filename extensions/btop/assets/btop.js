@@ -65,8 +65,33 @@
     for (const k of FOCUS_KEYS) if (el.dataset && el.dataset[k] != null) return [k, el.dataset[k]];
     return null;
   }
+  /* A mouse click whose press and release straddle a re-render is lost: the
+     pressed node is replaced, so the browser fires click on a common ancestor
+     and the row / toggle / button never sees it. While the primary pointer is
+     down, writes that would replace the pressed node wait, and one render
+     after the click has been dispatched catches up. */
+  const press = { node: null, at: 0, held: false };
+  function pressedIn(el) {
+    if (!press.node) return false;
+    if (Date.now() - press.at > 5000) { press.node = null; return false; }   // lost pointerup
+    return el.contains(press.node);
+  }
+  function startPress(e) {
+    if (e.isPrimary === false || e.button !== 0) return;
+    press.node = e.target; press.at = Date.now();
+  }
+  function endPress() {
+    if (!press.node) return;
+    press.node = null;
+    if (!press.held) return;
+    press.held = false;
+    // click is dispatched in the same task as pointerup; render after it
+    setTimeout(() => { if (st.snap) render(); else renderStatus(); }, 0);
+  }
+
   function setHTML(el, html) {
     if (!el || el.__hbtHTML === html) return;
+    if (pressedIn(el)) { press.held = true; return; }
     const active = document.activeElement;
     const key = active && el.contains(active) ? focusKey(active) : null;
     el.innerHTML = html;
@@ -101,12 +126,17 @@
         '<div class="hbt-chips">' + chips + '</div>' +
         '<div class="hbt-ctl">' +
           '<span class="hbt-live" data-f="live"><i></i><span>connecting</span></span>' +
-          '<button type="button" class="hbt-btn" data-act="interval" title="Refresh interval">1s</button>' +
-          '<button type="button" class="hbt-btn" data-act="graph" title="Graph style">⣿</button>' +
-          '<button type="button" class="hbt-btn" data-act="pause" title="Pause (space)">❚❚</button>' +
+          '<button type="button" class="hbt-btn" data-act="interval" title="Refresh interval" aria-label="Refresh interval: 1s">1s</button>' +
+          '<button type="button" class="hbt-btn" data-act="graph" title="Graph style" aria-label="Graph style: dots">⣿</button>' +
+          '<button type="button" class="hbt-btn" data-act="pause" title="Pause (space)" aria-label="Pause updates" aria-pressed="false">❚❚</button>' +
         '</div>' +
       '</div>' +
-      '<div class="hbt-notice" data-f="notice" hidden></div>' +
+      // The live region stays rendered (an announcement needs an existing
+      // region); the box inside it is shown on error. The "last update … ago"
+      // ticker is aria-hidden so it does not re-announce every retry.
+      '<div class="hbt-notice-live" role="status">' +
+        '<div class="hbt-notice" data-f="notice" hidden><span data-f="noticeMsg"></span><span class="hbt-dim" data-f="noticeAgo" aria-hidden="true"></span></div>' +
+      '</div>' +
       '<div class="hbt-grid">' +
         '<section class="hbt-box hbt-cpu" data-box="cpu">' +
           '<h3 class="hbt-title"><sup>1</sup>cpu</h3><span class="hbt-title-r" data-f="cpuInfo"></span>' +
@@ -133,7 +163,7 @@
             '<label class="hbt-filter"><span>filter</span><input type="search" data-f="filter" placeholder="name, pid, user, g:webui, !root" autocomplete="off" spellcheck="false"></label>' +
             '<button type="button" class="hbt-btn" data-act="tree" aria-pressed="false" title="Tree view (t)">tree</button>' +
             '<button type="button" class="hbt-btn" data-act="percore" aria-pressed="false" title="CPU% per core instead of share of all cores">per-core</button>' +
-            '<button type="button" class="hbt-btn" data-act="reverse" title="Reverse sort (r)">↓</button>' +
+            '<button type="button" class="hbt-btn" data-act="reverse" title="Reverse sort (r)" aria-label="Reverse sort order (descending)">↓</button>' +
           '</div>' +
           '<div class="hbt-detail" data-f="detail" hidden></div>' +
           '<div class="hbt-proc-scroll" data-f="procScroll"><table class="hbt-table"><thead><tr>' +
@@ -238,6 +268,7 @@
   }
 
   let coreSwitchPanel = null;   // Core's switchPanel, captured before wrapping
+  let navGen = 0;               // bumped by every navigation; a pending open that sees it move gives up
 
   async function show() {
     const main = document.querySelector('main.main');
@@ -247,12 +278,16 @@
       // what stops Logs auto-refresh, closes the Kanban SSE, honours the
       // unsaved-Settings guard and leaves _currentPanel truthful. Only then
       // overlay the btop view on top of it.
+      const gen = ++navGen;
       const sw = coreSwitchPanel || window.switchPanel;
       if (typeof sw === 'function') {
         let ok = true;
-        try { ok = await sw.call(window, 'chat'); } catch (_) { ok = true; }
+        try { ok = await sw.call(window, 'chat'); } catch (err) { console.warn('[btop] panel transition failed', err); return; }
         if (ok === false) return;      // e.g. Settings has unsaved changes
       }
+      // Another navigation (switchPanel, newSession, a second open) ran while
+      // Core's transition was in flight: it wins, so don't cover it.
+      if (gen !== navGen) return;
     }
     Array.from(main.classList).filter((c) => c.startsWith('showing-')).forEach((c) => main.classList.remove(c));
     main.classList.add('showing-' + PANEL);
@@ -298,6 +333,7 @@
     if (typeof orig === 'function' && !orig.__hbtWrapped) {
       coreSwitchPanel = orig;
       const wrapped = function (name, opts) {
+        navGen++;
         opts = opts || {};
         if (st.active && name !== PANEL) {
           hide();
@@ -316,6 +352,7 @@
     const origNew = window.newSession;
     if (typeof origNew === 'function' && !origNew.__hbtWrapped) {
       const w = function () {
+        navGen++;
         if (st.active) window.switchPanel('chat');
         return origNew.apply(this, arguments);
       };
@@ -569,9 +606,11 @@
     setText(live.querySelector('span'), st.paused ? 'paused' : err ? 'offline' : st.warming ? 'starting' : 'live');
     const n = F.notice;
     if (!n) return;
-    if (!err) { n.hidden = true; return; }
-    const ago = st.lastOk ? ' <span class="hbt-dim">· last update ' + C.fmtDuration((Date.now() - st.lastOk) / 1000) + ' ago</span>' : '';
-    setHTML(n, noticeHtml(err) + ago);
+    if (!err) { n.hidden = true; setHTML(F.noticeMsg, ''); return; }   // cleared, so a repeat error is announced again
+    // Message and ticker are written separately: the message only changes
+    // with the error, so the live region announces it once.
+    setHTML(F.noticeMsg, noticeHtml(err));
+    setText(F.noticeAgo, st.lastOk ? ' · last update ' + C.fmtDuration((Date.now() - st.lastOk) / 1000) + ' ago' : '');
     n.hidden = false;
   }
 
@@ -745,7 +784,9 @@
     if (table) table.classList.toggle('hbt-tree-mode', !!prefs.tree);
     const shown = rows.length;
     const tr = snap.truncated;
-    const cut = tr && tr.procs ? ' · top ' + (snap.procs || []).length + ' sent' : '';
+    const sent = (snap.procs || []).length;
+    // Say it on the page, not only in a tooltip (touch has no hover).
+    const cut = tr && tr.procs ? ' · busiest ' + sent + ' shown' : '';
     setText(F.procCount, (prefs.filter ? shown + '/' : '') + (snap.proc_total || 0) + ' procs' + cut);
     if (F.procCount) F.procCount.title = cut ? 'The sidecar trimmed the quietest processes to stay under the WebUI proxy size limit.' : '';
     $$('th[data-sort]', page).forEach((th) => {
@@ -762,7 +803,7 @@
       if (p.dimmed) cls.push('hbt-dimrow');
       if (cpu >= 50) cls.push('hbt-hot'); else if (cpu >= 10) cls.push('hbt-warm');
       const tw = prefs.tree
-        ? '<span class="hbt-tree">' + esc(p.prefix || '') + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + p.pid + '">' + (p.collapsed ? '[+]' : '[-]') + '</button>' : '') + '</span>'
+        ? '<span class="hbt-tree">' + esc(p.prefix || '') + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + p.pid + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + (p.collapsed ? '[+]' : '[-]') + '</button>' : '') + '</span>'
         : '';
       const dot = p.group ? '<i class="hbt-dot hbt-c-' + colorOf(p.group) + '" title="' + esc(p.group) + '"></i>' : '';
       html += '<tr class="' + cls.join(' ') + '" data-pid="' + p.pid + '">' +
@@ -774,11 +815,21 @@
         '<td class="hbt-c-mem">' + C.fmtBytes(p.mem, { compact: true }) + '</td>' +
         '<td class="hbt-c-cpu"><span class="hbt-spark">' + esc(spark) + '</span>' + cpu.toFixed(1) + '</td></tr>';
     }
-    if (!rows.length) html = '<tr><td colspan="7" class="hbt-dim hbt-empty">' + (prefs.filter ? 'no process matches “' + esc(prefs.filter) + '”' : 'waiting for process data…') + '</td></tr>';
+    if (!rows.length) {
+      const why = prefs.filter
+        ? 'no process matches “' + esc(prefs.filter) + '”' + (cut ? ' among the busiest ' + sent + ' (the quietest were trimmed to fit the proxy size limit)' : '')
+        : 'waiting for process data…';
+      html = '<tr><td colspan="7" class="hbt-dim hbt-empty">' + why + '</td></tr>';
+    }
     setHTML(F.procBody, html);
     renderDetail();
   }
 
+  /* The detail block is built once per process (pid + start time, name, group
+     and signal set). Everything that moves per tick or per detail refresh is
+     then written in place, so the signal buttons keep their identity: a click
+     that spans a tick still lands on "confirm TERM?", and the armed state
+     simply carries over. */
   function renderDetail() {
     const el = F.detail;
     if (!el) return;
@@ -793,31 +844,39 @@
         '<button type="button" class="hbt-btn" data-act="close-detail">close</button></div>');
       return;
     }
+    // An armed confirm belongs to the exact process it was armed on.
+    if (st.confirm && (st.confirm.pid !== d.pid || st.confirm.start !== d.start)) st.confirm = null;
     const kv = (k, v) => (v == null || v === '' ? '' : '<div><span class="hbt-dim">' + k + '</span> ' + v + '</div>');
     const sigs = st.snap && st.snap.signals ? ['TERM', 'INT', 'HUP', 'KILL', (String(d.state || '').startsWith('T') ? 'CONT' : 'STOP')] : [];
-    const sigHtml = sigs.map((s) => {
-      const armed = st.confirm && st.confirm.pid === d.pid && st.confirm.sig === s;
-      return '<button type="button" class="hbt-btn hbt-sig' + (s === 'KILL' ? ' hbt-danger' : '') + (armed ? ' hbt-armed' : '') + '" data-sig="' + s + '">' +
-        (armed ? 'confirm ' + s + '?' : s.toLowerCase()) + '</button>';
-    }).join('');
-    const spark = C.sparkline((st.procHist.get(d.pid) || []).map((v) => v / div), 100 / (div === 1 ? 1 : 1), 10);
     setHTML(el,
-      '<div class="hbt-d-head"><b>' + d.pid + '</b> <b class="hbt-d-name">' + esc(d.name) + '</b>' +
+      '<div class="hbt-d-head" data-for-pid="' + d.pid + '" data-for-start="' + esc(d.start) + '"><b>' + d.pid + '</b> <b class="hbt-d-name">' + esc(d.name) + '</b>' +
         (d.group ? ' <span class="hbt-tag hbt-c-' + colorOf(d.group) + '">' + esc(d.group) + '</span>' : '') +
-        '<span class="hbt-d-cpu">' + (live ? (live.cpu / div).toFixed(1) + '% <span class="hbt-spark">' + esc(spark) + '</span>' : '') + '</span>' +
-        '<span class="hbt-grow"></span>' + sigHtml +
+        '<span class="hbt-d-cpu"><span data-d="cpu"></span> <span class="hbt-spark" data-d="spark"></span></span>' +
+        '<span class="hbt-grow"></span>' +
+        sigs.map((s) => '<button type="button" class="hbt-btn hbt-sig' + (s === 'KILL' ? ' hbt-danger' : '') + '" data-sig="' + s + '">' + s.toLowerCase() + '</button>').join('') +
         '<button type="button" class="hbt-btn" data-act="close-detail" aria-label="Close details">✕</button></div>' +
-      '<div class="hbt-d-cmd">' + esc(d.cmd || '[' + d.name + ']') + '</div>' +
-      '<div class="hbt-d-grid">' +
-        kv('state', esc(d.state)) + kv('user', esc(d.user)) + kv('ppid', d.ppid) + kv('threads', d.threads) +
-        kv('nice', d.nice) + kv('up', C.fmtDuration(d.age)) + kv('cpu time', C.fmtDuration(d.cpu_time)) +
-        kv('rss', C.fmtBytes(d.rss)) + kv('virt', C.fmtBytes(d.vsize)) + kv('peak', d.peak != null ? C.fmtBytes(d.peak) : null) +
-        kv('swap', d.swap ? C.fmtBytes(d.swap) : null) + kv('fds', d.fds) +
-        kv('io r/w', d.io_read != null ? C.fmtBytes(d.io_read) + ' / ' + C.fmtBytes(d.io_write) : null) +
-        kv('ctx', d.ctx_vol != null ? d.ctx_vol + ' / ' + d.ctx_invol : null) +
-        kv('cwd', d.cwd ? '<code>' + esc(d.cwd) + '</code>' : null) + kv('exe', d.exe ? '<code>' + esc(d.exe) + '</code>' : null) +
-        (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + c.pid + '">' + c.pid + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : '')) : '') +
-      '</div>');
+      '<div class="hbt-d-cmd" data-d="cmd"></div>' +
+      '<div class="hbt-d-grid" data-d="grid"></div>');
+    const part = (k) => el.querySelector('[data-d="' + k + '"]');
+    const spark = C.sparkline((st.procHist.get(d.pid) || []).map((v) => v / div), 100, 10);
+    setText(part('cpu'), live ? (live.cpu / div).toFixed(1) + '%' : '');
+    setText(part('spark'), live ? spark : '');
+    $$('[data-sig]', el).forEach((b) => {
+      const s = b.dataset.sig;
+      const armed = !!(st.confirm && st.confirm.sig === s);
+      setText(b, armed ? 'confirm ' + s + '?' : s.toLowerCase());
+      b.classList.toggle('hbt-armed', armed);
+    });
+    setText(part('cmd'), d.cmd || '[' + d.name + ']');
+    setHTML(part('grid'),
+      kv('state', esc(d.state)) + kv('user', esc(d.user)) + kv('ppid', d.ppid) + kv('threads', d.threads) +
+      kv('nice', d.nice) + kv('up', C.fmtDuration(d.age)) + kv('cpu time', C.fmtDuration(d.cpu_time)) +
+      kv('rss', C.fmtBytes(d.rss)) + kv('virt', C.fmtBytes(d.vsize)) + kv('peak', d.peak != null ? C.fmtBytes(d.peak) : null) +
+      kv('swap', d.swap ? C.fmtBytes(d.swap) : null) + kv('fds', d.fds) +
+      kv('io r/w', d.io_read != null ? C.fmtBytes(d.io_read) + ' / ' + C.fmtBytes(d.io_write) : null) +
+      kv('ctx', d.ctx_vol != null ? d.ctx_vol + ' / ' + d.ctx_invol : null) +
+      kv('cwd', d.cwd ? '<code>' + esc(d.cwd) + '</code>' : null) + kv('exe', d.exe ? '<code>' + esc(d.exe) + '</code>' : null) +
+      (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + c.pid + '">' + c.pid + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : '')) : ''));
   }
 
   function renderSide(snap) {
@@ -864,16 +923,23 @@
   function syncButtons() {
     if (!page) return;
     const iv = interval();
-    setText($('[data-act="interval"]', page), iv >= 1000 ? (iv / 1000) + 's' : iv + 'ms');
+    const ivText = iv >= 1000 ? (iv / 1000) + 's' : iv + 'ms';
+    const ivBtn = $('[data-act="interval"]', page);
+    setText(ivBtn, ivText);
+    ivBtn.setAttribute('aria-label', 'Refresh interval: ' + ivText);
     const g = opt('graph', 'dots');
-    setText($('[data-act="graph"]', page), g === 'dots' ? '⣿' : '◢');
-    $('[data-act="graph"]', page).title = 'Graph style: ' + g;
+    const gBtn = $('[data-act="graph"]', page);
+    setText(gBtn, g === 'dots' ? '⣿' : '◢');
+    gBtn.title = 'Graph style: ' + g;
+    gBtn.setAttribute('aria-label', 'Graph style: ' + g);
     const pause = $('[data-act="pause"]', page);
     setText(pause, st.paused ? '▶' : '❚❚');
     pause.setAttribute('aria-pressed', String(st.paused));
     $('[data-act="tree"]', page).setAttribute('aria-pressed', String(!!prefs.tree));
     $('[data-act="percore"]', page).setAttribute('aria-pressed', String(!!opt('perCore', false)));
-    setText($('[data-act="reverse"]', page), prefs.desc ? '↓' : '↑');
+    const rev = $('[data-act="reverse"]', page);
+    setText(rev, prefs.desc ? '↓' : '↑');
+    rev.setAttribute('aria-label', 'Reverse sort order (' + (prefs.desc ? 'descending' : 'ascending') + ')');
     if (F.filter && document.activeElement !== F.filter && F.filter.value !== prefs.filter) F.filter.value = prefs.filter || '';
   }
 
@@ -923,6 +989,11 @@
   function bindPage() {
     if (!page || page.__hbtBound) return;
     page.__hbtBound = true;
+    page.addEventListener('pointerdown', startPress);
+    if (side) side.addEventListener('pointerdown', startPress);
+    document.addEventListener('pointerup', endPress, true);
+    document.addEventListener('pointercancel', endPress, true);
+    window.addEventListener('blur', endPress);
     page.addEventListener('click', (e) => {
       const t = e.target;
       const chip = t.closest('[data-box-toggle]');
@@ -944,9 +1015,14 @@
       }
       const sig = t.closest('[data-sig]');
       if (sig && st.detail) {
+        // Only a button drawn for the process currently in st.detail counts
+        // (a stale one can survive a held re-render).
+        const head = sig.closest('[data-for-pid]');
+        if (!head || head.dataset.forPid !== String(st.detail.pid) ||
+            head.dataset.forStart !== String(st.detail.start == null ? '' : st.detail.start)) return;
         const s = sig.dataset.sig;
         const pid = st.detail.pid;
-        if (st.confirm && st.confirm.pid === pid && st.confirm.sig === s && Date.now() - st.confirm.at < 5000) {
+        if (st.confirm && st.confirm.pid === pid && st.confirm.start === st.detail.start && st.confirm.sig === s && Date.now() - st.confirm.at < 5000) {
           const start = st.confirm.start;
           st.confirm = null;
           sendSignal(pid, s, start);

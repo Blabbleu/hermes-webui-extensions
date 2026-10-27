@@ -108,10 +108,10 @@ sidecar, and so on.
 - **Response size:** each snapshot's JSON is capped at 448 KiB, under Core's
   512 KiB proxy limit. Over the cap, the oldest history samples are dropped
   first, then the quietest process rows. The response carries
-  `truncated: {history, procs, budget}`, and the page shows how many processes
-  were sent. Snapshots are gzip-compressed when the browser accepts it. The
-  page fetches only the history delta since its last sequence number, and
-  skips process data when no box that needs it is visible.
+  `truncated: {history, procs, budget}`, and the page says how many of the
+  busiest processes it shows. Snapshots are gzip-compressed when the browser
+  accepts it. The page fetches only the history delta since its last sequence
+  number, and skips process data when no box that needs it is visible.
 - **Routes:**
   - `GET /api/snapshot?since=&boot=&procs=0|1`
   - `GET /api/proc/{pid}`, including `start`, the process start time

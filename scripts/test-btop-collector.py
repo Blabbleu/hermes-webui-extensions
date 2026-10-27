@@ -364,6 +364,8 @@ class Live(unittest.TestCase):
         self.assertEqual(col.send_signal(os.getpid(), "TERM", 1)[0], 400)
         self.assertEqual(col.send_signal(12345, "SEGV", 1)[0], 400)
         self.assertEqual(col.send_signal(12345, "TERM", None)[0], 400)      # start is required
+        for bad in (True, False, 1.0, 12345.9, "1", [1]):                  # ...and must be a plain int
+            self.assertEqual(col.send_signal(12345, "TERM", bad)[0], 400, repr(bad))
         self.assertEqual(col.send_signal(2 ** 22 + 12345, "TERM", 1)[0], 404)
         col.signals_enabled = False
         self.assertEqual(col.send_signal(12345, "TERM", 1)[0], 403)
@@ -374,6 +376,8 @@ class Live(unittest.TestCase):
         child = subprocess.Popen(["sleep", "30"])
         try:
             start = col.proc_detail(child.pid)["start"]
+            for loose in (float(start), str(start)):                       # int(loose) == start, still refused
+                self.assertEqual(col.send_signal(child.pid, "TERM", loose)[0], 400, repr(loose))
             code, body = col.send_signal(child.pid, "TERM", start + 1)   # the PID now "belongs" to another process
             self.assertEqual(code, 409, body)
             time.sleep(0.1)

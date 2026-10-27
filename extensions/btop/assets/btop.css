@@ -304,6 +304,12 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
     content: ""; position: absolute; left: 50%; top: 50%; width: 44px; height: 44px; transform: translate(-50%, -50%);
   }
   .hbt-iface { gap: 18px; }
+  /* Table cells clip overflow (for the ellipsis), which would cut a toggle's
+     44 px pseudo hit area down to the row height. In tree view rows are 44 px
+     tall instead, and the hit area starts at the cell edge so a top-level
+     toggle is not clipped on the left either. */
+  .hbt-tree-mode .hbt-pr td { padding-top: 14px; padding-bottom: 14px; }
+  .hbt-tw::after { left: -4px; transform: translateY(-50%); }
 }
 
 /* ── responsive ───────────────────────────────────────────────────────────── */
@@ -323,7 +329,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 @media (max-width: 640px) {
   .hbt-page { font-size: 11.5px; }
   .hbt-top { padding: 6px 8px; gap: 6px; }
-  .hbt-brand { flex: 1 1 auto; }
+  .hbt-brand { flex: 1 1 0; }   /* host truncates; the controls stay on row one */
   .hbt-ctl { margin-left: 0; }
   .hbt-chips { order: 3; flex-basis: 100%; overflow-x: auto; flex-wrap: nowrap; scrollbar-width: none; }
   .hbt-chip { flex: 0 0 auto; }

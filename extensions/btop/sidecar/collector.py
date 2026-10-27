@@ -775,8 +775,12 @@ class Collector:
         """Signal ``pid`` only if it is still the process that started at
         ``start`` (clock ticks since boot, /proc/<pid>/stat field 22).
 
-        The pidfd pins the process: after ``pidfd_open`` the PID can no longer
-        be recycled under us, so check-then-signal is race-free.
+        The pidfd does not stop the PID being recycled; it names one process.
+        The start time is checked after ``pidfd_open``, and the signal goes
+        through the descriptor: if that process has exited and been reaped in
+        between (so its PID may now belong to someone else),
+        ``pidfd_send_signal`` fails with ESRCH instead of reaching the new
+        owner. That is what makes check-then-signal race-free.
         """
         if not self.signals_enabled:
             return 403, {"error": "signals are disabled (BTOP_SIGNALS=0)"}
@@ -785,10 +789,10 @@ class Collector:
             return 400, {"error": "signal not allowed", "allowed": sorted(ALLOWED_SIGNALS)}
         if pid <= 1 or pid == os.getpid():
             return 400, {"error": "refusing to signal this process"}
-        try:
-            start = int(start)
-        except (TypeError, ValueError):
-            return 400, {"error": "start (process start time) is required"}
+        # Exactly the integer the detail route returned: no floats, strings or
+        # bools (int(True) == 1, int(12345.9) == 12345).
+        if isinstance(start, bool) or not isinstance(start, int):
+            return 400, {"error": "start (process start time, an integer) is required"}
         pidfd_open = getattr(os, "pidfd_open", None)
         pidfd_send = getattr(signal, "pidfd_send_signal", None)
         if pidfd_open is None or pidfd_send is None:
