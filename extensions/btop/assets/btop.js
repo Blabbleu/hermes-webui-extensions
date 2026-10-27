@@ -53,6 +53,10 @@
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  // A pid is only ever a positive integer. Whatever answers on the sidecar
+  // port is not authenticated, and a pid also becomes part of request paths
+  // (/api/proc/<pid>, /api/proc/<pid>/signal), so anything else is dropped.
+  function okPid(v) { return Number.isSafeInteger(v) && v > 0; }
   function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
 
   /* Live regions re-render every tick. Writing innerHTML would destroy a
@@ -404,6 +408,7 @@
       }
       st.warming = false;
       if (!body.now) throw Object.assign(new Error('empty snapshot'), { status: r.status });
+      if (Array.isArray(body.procs)) body.procs = body.procs.filter((p) => p && okPid(p.pid));
       if (body.boot !== st.boot) { st.history = []; st.boot = body.boot; }
       st.history = C.mergeHistory(st.history, body.history, 600);
       st.seq = body.seq;
@@ -443,12 +448,16 @@
   }
 
   async function loadDetail(pid) {
+    if (!okPid(pid)) return;
     st.detailAt = Date.now();
     try {
       const r = await fetch(BASE + '/api/proc/' + pid, { credentials: 'same-origin', cache: 'no-store' });
       const body = await r.json().catch(() => null);
       if (st.selected !== pid) return;
-      st.detail = r.ok ? body : { pid, gone: true, error: (body && body.error) || ('HTTP ' + r.status) };
+      // The detail must describe the process asked for: its pid feeds the
+      // signal request path.
+      if (r.ok && (!body || body.pid !== pid)) st.detail = { pid, gone: true, error: 'unexpected answer from the sidecar' };
+      else st.detail = r.ok ? body : { pid, gone: true, error: (body && body.error) || ('HTTP ' + r.status) };
     } catch (e) {
       if (st.selected === pid) st.detail = { pid, gone: true, error: String(e.message || e) };
     }
@@ -456,6 +465,7 @@
   }
 
   async function sendSignal(pid, sig, start) {
+    if (!okPid(pid)) return;
     try {
       const r = await fetch(BASE + '/api/proc/' + pid + '/signal', {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
@@ -856,7 +866,7 @@
     const ncpu = (st.snap && st.snap.now && st.snap.now.ncpu) || 1;
     const div = opt('perCore', false) ? 1 : ncpu;
     if (d.gone) {
-      setHTML(el, '<div class="hbt-d-head"><b>' + st.selected + '</b> <span class="hbt-dim">' + esc(d.error || 'process ended') + '</span>' +
+      setHTML(el, '<div class="hbt-d-head"><b>' + esc(st.selected) + '</b> <span class="hbt-dim">' + esc(d.error || 'process ended') + '</span>' +
         '<button type="button" class="hbt-btn" data-act="close-detail">close</button></div>');
       return;
     }
@@ -986,6 +996,7 @@
   }
 
   function select(pid) {
+    if (pid != null && !okPid(pid)) return;
     if (pid == null || st.selected === pid) {
       st.selected = null; st.detail = null; st.confirm = null;
       renderDetail(); render();

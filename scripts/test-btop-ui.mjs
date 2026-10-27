@@ -55,11 +55,16 @@ function setup() {
   w.cancelAnimationFrame = () => {};
   w.Date.now = () => h.now;
   let seq = 0;
+  h.urls = [];
   w.fetch = async (url, opts = {}) => {
+    h.urls.push((opts.method || 'GET') + ' ' + url);
     let status = 200;
     let body;
     if (url.endsWith('/signal')) { h.posts.push(JSON.parse(opts.body)); body = { ok: true }; }
-    else if (url.includes('/api/proc/')) body = Object.assign({ pid: 42, start: h.start, name: 'busy', state: 'R', cmd: 'busy --loop', age: 5, children: [] }, h.detail || {});
+    else if (url.includes('/api/proc/')) {
+      if (h.detailStatus) status = h.detailStatus;
+      body = Object.assign({ pid: 42, start: h.start, name: 'busy', state: 'R', cmd: 'busy --loop', age: 5, children: [] }, h.detail || {});
+    }
     else if (h.fail) { status = h.fail.status; body = { error: h.fail.error }; }
     else {
       body = { boot: 'b', seq: ++seq, signals: true, host: { hostname: 'box' }, proc_total: h.total === undefined ? 9 : h.total, truncated: h.truncated,
@@ -262,10 +267,10 @@ test('numbers from the sidecar are text everywhere, not markup', async () => {
   // quote also catches attribute-context sinks (data-pid="…").
   const x = (f) => '"><img data-f="' + f + '" src=x>';
   const h = setup();
+  // (A non-integer pid is dropped on arrival; see the next test.)
   h.procs = [
     { pid: 42, ppid: 1, name: 'busy', cmd: 'busy', user: 'u', cpu: 1, mem: 1, threads: x('threads') },
-    { pid: x('pid'), ppid: 42, name: 'kid', cmd: 'kid', user: 'u', cpu: 1, mem: 1, threads: 1 },
-    { pid: 44, ppid: x('pid'), name: 'grandkid', cmd: 'grandkid', user: 'u', cpu: 1, mem: 1, threads: 1 },
+    { pid: 43, ppid: 42, name: 'kid', cmd: 'kid', user: 'u', cpu: 1, mem: 1, threads: 1 },
   ];
   h.patchSnap = (b) => {
     b.proc_total = x('proc_total');
@@ -273,7 +278,7 @@ test('numbers from the sidecar are text everywhere, not markup', async () => {
     b.now.disks = [{ mount: '/', dev: 'sda', fs: 'ext4', total: 100, used: 50, read: 1, write: 1, busy: x('busy') }];
     b.groups = [{ name: 'agent', procs: x('g.procs'), cpu: 1, mem: 1, own: 0 }];
   };
-  h.detail = { pid: x('d.pid'), ppid: x('ppid'), threads: x('d.threads'), nice: x('nice'), fds: x('fds'),
+  h.detail = { ppid: x('ppid'), threads: x('d.threads'), nice: x('nice'), fds: x('fds'),
     ctx_vol: x('ctx_vol'), ctx_invol: x('ctx_invol'), children: [{ pid: x('c.pid'), name: 'kid' }], user: 'u' };
   await h.w.__hermesBtop.open();
   await h.run();
@@ -287,6 +292,45 @@ test('numbers from the sidecar are text everywhere, not markup', async () => {
   assert.match(h.$('[data-f="detail"]').textContent, /<img data-f="ppid" src=x>/, 'the hostile value is shown as text');
   const sideG = h.$('.hbt-side-g');
   assert.ok(sideG && /<img data-f="g\.procs"/.test(sideG.textContent), 'sidebar group count rendered as text');
+});
+
+test('a pid that is not a positive integer never selects, renders, or reaches a request path', async () => {
+  const h = setup();
+  const evil = '../../../../../health/restart#"><img data-f="pid" src=x>';
+  h.procs = [
+    { pid: evil, ppid: 1, name: 'evil', cmd: 'evil', user: 'u', cpu: 99, mem: 1, threads: 1 },
+    { pid: 42, ppid: 1, name: 'busy', cmd: 'busy', user: 'u', cpu: 1, mem: 1, threads: 1 },
+    { pid: 4.5, ppid: 1, name: 'frac', cmd: 'frac', user: 'u', cpu: 50, mem: 1, threads: 1 },
+  ];
+  await h.w.__hermesBtop.open();
+  await h.run();
+  assert.deepEqual([...h.w.document.querySelectorAll('tr[data-pid]')].map((tr) => tr.dataset.pid), ['42'], 'only the valid row is listed');
+  // keyboard selection walks the listed rows only
+  for (const k of ['ArrowDown', 'ArrowDown', 'ArrowUp', 'ArrowDown']) {
+    h.w.document.dispatchEvent(new h.w.KeyboardEvent('keydown', { key: k, bubbles: true }));
+    await flush();
+    const sel = h.state().selected;
+    assert.ok(sel == null || sel === 42, 'selected stays a listed pid, got ' + sel);
+  }
+  // a detail answer for a different pid is not trusted: no signal buttons, and
+  // nothing leaves the sidecar path even if a stale button is clicked
+  h.detail = { pid: evil, start: 77 };
+  if (h.state().selected !== 42) h.$('tr[data-pid="42"]').click();
+  await flush();
+  await h.run();
+  assert.equal(h.$('[data-sig]'), null, 'no signal buttons for a mismatched detail');
+  assert.match(h.$('[data-f="detail"]').textContent, /unexpected answer from the sidecar/);
+  // a failed detail load renders the selected pid as text
+  h.detail = null;
+  h.detailStatus = 404;
+  h.$('[data-act="close-detail"]').click();
+  await flush();
+  h.$('tr[data-pid="42"]').click();
+  await flush();
+  assert.equal(h.$('[data-f="detail"] .hbt-d-head b').textContent, '42');
+  assert.deepEqual([...h.w.document.querySelectorAll('img')].map((i) => i.dataset.f), []);
+  const off = h.urls.filter((u) => !/^(GET|POST) \/api\/extensions\/btop\/sidecar\/api\/(snapshot\?|proc\/42(\/signal)?$)/.test(u));
+  assert.deepEqual(off, [], 'every request stays on the sidecar path with a numeric pid');
 });
 
 test('tree guides and toggle brackets are spans; the drawn prefix text is unchanged', async () => {
