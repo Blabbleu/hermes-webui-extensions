@@ -30,7 +30,8 @@ const CORE_STUB = `
   }
   function _isDesktopWidth() { return true; }
   function _isSidebarCollapsed() { return false; }
-  function showToast() {}
+  window.__toasts = [];
+  function showToast(msg, ms, type) { window.__toasts.push({ msg, ms, type }); }
 `;
 
 function setup() {
@@ -118,6 +119,10 @@ test('a failed Core transition does not overlay the page', async () => {
   assert.equal(h.state().active, false);
   assert.ok(!h.$('main').classList.contains('showing-x-btop'));
   assert.ok(h.warns.some((m) => /panel transition failed/.test(m)));
+  const t = h.w.__toasts.find((x) => x.type === 'error');
+  assert.ok(t, 'the failure is surfaced as an error toast, not only in the console');
+  assert.match(t.msg, /Could not open the system monitor: transition failed/);
+  assert.equal(t.ms, undefined, 'type goes in the third slot; Core picks the duration');
 });
 
 test('signal buttons keep their identity across ticks; confirm carries over and pins start', async () => {
@@ -210,9 +215,10 @@ test('glyph buttons have names; trimmed process list says so on the page', async
   for (const act of ['interval', 'graph', 'pause', 'reverse']) {
     assert.ok(h.$('[data-act="' + act + '"]').getAttribute('aria-label'), act + ' has an aria-label');
   }
+  assert.equal(h.$('[data-act="reverse"]').getAttribute('aria-label'), 'Reverse sort order, currently descending');
   assert.match(h.$('[data-f="procCount"]').textContent, /busiest 1 shown/);
   const filter = h.$('[data-f="filter"]');
   filter.value = 'nomatch';
   filter.dispatchEvent(new h.w.Event('input', { bubbles: true }));
-  assert.match(h.$('.hbt-empty').textContent, /among the busiest 1/);
+  assert.match(h.$('.hbt-empty').textContent, /among the busiest 1 shown; quieter processes were trimmed/);
 });

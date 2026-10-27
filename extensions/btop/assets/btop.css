@@ -257,6 +257,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-tree { color: var(--muted); white-space: pre; }
 .hbt-tw { position: relative; appearance: none; border: 0; background: none; color: var(--hbt-tx-accent); font: inherit; padding: 0 2px 0 0; cursor: pointer; }
 .hbt-empty { text-align: center; padding: 18px !important; }
+.hbt-table td.hbt-empty { white-space: normal; text-overflow: clip; }   /* the hint wraps instead of ellipsizing */
 
 .hbt-detail {
   border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; margin-bottom: 8px;
@@ -344,4 +345,5 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   .hbt-hg .hbt-spark, .hbt-hg-spark-h { display: none; }
   .hbt-d-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .hbt-title-r { max-width: 62%; }
+  .hbt-proc .hbt-title-r { max-width: calc(100% - 84px); }   /* room for "N procs · busiest N shown" next to "proc" */
 }

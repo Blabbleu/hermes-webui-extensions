@@ -163,7 +163,7 @@
             '<label class="hbt-filter"><span>filter</span><input type="search" data-f="filter" placeholder="name, pid, user, g:webui, !root" autocomplete="off" spellcheck="false"></label>' +
             '<button type="button" class="hbt-btn" data-act="tree" aria-pressed="false" title="Tree view (t)">tree</button>' +
             '<button type="button" class="hbt-btn" data-act="percore" aria-pressed="false" title="CPU% per core instead of share of all cores">per-core</button>' +
-            '<button type="button" class="hbt-btn" data-act="reverse" title="Reverse sort (r)" aria-label="Reverse sort order (descending)">↓</button>' +
+            '<button type="button" class="hbt-btn" data-act="reverse" title="Reverse sort (r)" aria-label="Reverse sort order, currently descending">↓</button>' +
           '</div>' +
           '<div class="hbt-detail" data-f="detail" hidden></div>' +
           '<div class="hbt-proc-scroll" data-f="procScroll"><table class="hbt-table"><thead><tr>' +
@@ -282,7 +282,11 @@
       const sw = coreSwitchPanel || window.switchPanel;
       if (typeof sw === 'function') {
         let ok = true;
-        try { ok = await sw.call(window, 'chat'); } catch (err) { console.warn('[btop] panel transition failed', err); return; }
+        try { ok = await sw.call(window, 'chat'); } catch (err) {
+          console.warn('[btop] panel transition failed', err);
+          toast('Could not open the system monitor: ' + ((err && err.message) || err), 'error');
+          return;
+        }
         if (ok === false) return;      // e.g. Settings has unsaved changes
       }
       // Another navigation (switchPanel, newSession, a second open) ran while
@@ -607,11 +611,11 @@
     const n = F.notice;
     if (!n) return;
     if (!err) { n.hidden = true; setHTML(F.noticeMsg, ''); return; }   // cleared, so a repeat error is announced again
-    // Message and ticker are written separately: the message only changes
-    // with the error, so the live region announces it once.
+    // Unhide first, then write: the message only changes with the error, so
+    // the live region announces it once; the ticker is written separately.
+    n.hidden = false;
     setHTML(F.noticeMsg, noticeHtml(err));
     setText(F.noticeAgo, st.lastOk ? ' · last update ' + C.fmtDuration((Date.now() - st.lastOk) / 1000) + ' ago' : '');
-    n.hidden = false;
   }
 
   /* Always show what the proxy / sidecar actually said; add a next step only
@@ -817,7 +821,7 @@
     }
     if (!rows.length) {
       const why = prefs.filter
-        ? 'no process matches “' + esc(prefs.filter) + '”' + (cut ? ' among the busiest ' + sent + ' (the quietest were trimmed to fit the proxy size limit)' : '')
+        ? 'no process matches “' + esc(prefs.filter) + '”' + (cut ? ' among the busiest ' + sent + ' shown; quieter processes were trimmed to fit the proxy size limit' : '')
         : 'waiting for process data…';
       html = '<tr><td colspan="7" class="hbt-dim hbt-empty">' + why + '</td></tr>';
     }
@@ -939,7 +943,7 @@
     $('[data-act="percore"]', page).setAttribute('aria-pressed', String(!!opt('perCore', false)));
     const rev = $('[data-act="reverse"]', page);
     setText(rev, prefs.desc ? '↓' : '↑');
-    rev.setAttribute('aria-label', 'Reverse sort order (' + (prefs.desc ? 'descending' : 'ascending') + ')');
+    rev.setAttribute('aria-label', 'Reverse sort order, currently ' + (prefs.desc ? 'descending' : 'ascending'));
     if (F.filter && document.activeElement !== F.filter && F.filter.value !== prefs.filter) F.filter.value = prefs.filter || '';
   }
 
