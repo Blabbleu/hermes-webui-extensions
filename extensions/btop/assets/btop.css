@@ -349,16 +349,18 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   .hbt-title-r { max-width: 62%; }
   .hbt-proc .hbt-title-r { max-width: calc(100% - 84px); }   /* room for "N procs · busiest N shown" next to "proc" */
   /* Give the program column what the fixed columns don't need here: pids are
-     at most 7 digits (pid_max 4194304) and the cpu cell is a bare "100.0"
-     once the sparkline is hidden. */
+     at most 7 digits (pid_max 4194304), and the cpu cell is a bare number once
+     the sparkline is hidden. Per-core mode can pass 10000% on a big host, so
+     the cpu cell keeps room for 7 characters ("12345.6"). */
   .hbt-c-pid { width: calc(7ch + 12px); }
-  .hbt-c-cpu { width: calc(5ch + 20px); }
+  .hbt-c-cpu { width: calc(7ch + 14px); }
   /* Tree view: ancestor guides at half width and the toggle without its
      brackets; the 44 px hit area is the ::after above, not the glyph. */
   .hbt-tree-mode .hbt-lead { letter-spacing: -.5ch; }
   .hbt-twb { display: none; }
 }
-@media (max-width: 420px) {
-  /* "25/1024 · busiest 400 shown" fits a 320 px phone; with " procs" it clips */
+@media (max-width: 374px) {
+  /* "25/1024 · busiest 400 shown" fits a 320 px phone; with " procs" it clips.
+     From 375 px up the full "1234/4096 procs · busiest 400 shown" fits. */
   .hbt-pc-cut .hbt-pc-word { display: none; }
 }

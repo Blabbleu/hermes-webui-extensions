@@ -802,7 +802,7 @@
     const cut = tr && tr.procs ? ' · busiest ' + sent + ' shown' : '';
     // " procs" sits in its own span so narrow phones can drop it while the
     // "busiest N shown" suffix needs the room (CSS, .hbt-pc-cut).
-    setHTML(F.procCount, (prefs.filter ? shown + '/' : '') + (snap.proc_total || 0) + '<span class="hbt-pc-word"> procs</span>' + esc(cut));
+    setHTML(F.procCount, (prefs.filter ? shown + '/' : '') + esc(snap.proc_total || 0) + '<span class="hbt-pc-word"> procs</span>' + esc(cut));
     if (F.procCount) F.procCount.classList.toggle('hbt-pc-cut', !!cut);
     if (F.procCount) F.procCount.title = cut ? 'The sidecar trimmed the quietest processes to stay under the WebUI proxy size limit.' : '';
     $$('th[data-sort]', page).forEach((th) => {

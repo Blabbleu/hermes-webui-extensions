@@ -62,7 +62,7 @@ function setup() {
     else if (url.includes('/api/proc/')) body = Object.assign({ pid: 42, start: h.start, name: 'busy', state: 'R', cmd: 'busy --loop', age: 5, children: [] }, h.detail || {});
     else if (h.fail) { status = h.fail.status; body = { error: h.fail.error }; }
     else {
-      body = { boot: 'b', seq: ++seq, signals: true, host: { hostname: 'box' }, proc_total: 9, truncated: h.truncated,
+      body = { boot: 'b', seq: ++seq, signals: true, host: { hostname: 'box' }, proc_total: h.total === undefined ? 9 : h.total, truncated: h.truncated,
         now: { cpu: { total: h.cpu }, cores: [h.cpu], ncpu: 1, load: { load: [0, 0, 0] }, mem: {}, disks: [], net: {} },
         history: [{ s: seq, cpu: h.cpu }],
         procs: h.procs || [{ pid: 42, ppid: 1, name: 'busy', cmd: 'busy --loop', user: 'u', cpu: h.cpu, mem: 1, threads: 1 }], groups: [] };
@@ -241,6 +241,18 @@ test('" procs" sits in a droppable span only while the list is trimmed', async (
   h.truncated = null;
   await h.run();
   assert.ok(!pc.classList.contains('hbt-pc-cut'), 'class clears when the cut goes away');
+});
+
+test('the process count is text: a hostile proc_total cannot inject markup', async () => {
+  const h = setup();
+  h.total = '<img src=x onerror="window.__pwned=1">';
+  h.truncated = { procs: 400, history: 0, budget: 458752 };
+  await h.w.__hermesBtop.open();
+  await h.run();
+  const pc = h.$('[data-f="procCount"]');
+  assert.equal(pc.querySelector('img'), null, 'no element built from proc_total');
+  assert.match(pc.textContent, /^<img src=x onerror="window.__pwned=1"> procs · busiest 1 shown$/);
+  assert.ok(pc.querySelector('.hbt-pc-word'), 'the droppable word span is still there');
 });
 
 test('tree guides and toggle brackets are spans; the drawn prefix text is unchanged', async () => {
