@@ -819,7 +819,7 @@
       if (p.dimmed) cls.push('hbt-dimrow');
       if (cpu >= 50) cls.push('hbt-hot'); else if (cpu >= 10) cls.push('hbt-warm');
       const tw = prefs.tree
-        ? '<span class="hbt-tree">' + treePrefix(p.prefix) + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + p.pid + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + '<span class="hbt-twb">[</span>' + (p.collapsed ? '+' : '-') + '<span class="hbt-twb">]</span></button>' : '') + '</span>'
+        ? '<span class="hbt-tree">' + treePrefix(p.prefix) + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + p.pid + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + '<span class="hbt-twb">[</span><span class="hbt-twg">' + (p.collapsed ? '+' : '-') + '</span><span class="hbt-twb">]</span></button>' : '') + '</span>'
         : '';
       const dot = p.group ? '<i class="hbt-dot hbt-c-' + colorOf(p.group) + '" title="' + esc(p.group) + '"></i>' : '';
       html += '<tr class="' + cls.join(' ') + '" data-pid="' + p.pid + '">' +
@@ -862,6 +862,10 @@
     }
     // An armed confirm belongs to the exact process it was armed on.
     if (st.confirm && (st.confirm.pid !== d.pid || st.confirm.start !== d.start)) st.confirm = null;
+    // Paths break after a slash (<wbr> is not copied with the text); a byte
+    // value keeps its number and unit on one line.
+    const pathHTML = (s) => '<code>' + esc(s).replace(/\//g, '/<wbr>') + '</code>';
+    const nb = (s) => String(s).replace(/ /g, '\u00a0');
     const kv = (k, v, wide) => (v == null || v === '' ? '' : '<div' + (wide ? ' class="hbt-d-wide"' : '') + '><span class="hbt-dim">' + k + '</span> ' + v + '</div>');
     const sigs = st.snap && st.snap.signals ? ['TERM', 'INT', 'HUP', 'KILL', (String(d.state || '').startsWith('T') ? 'CONT' : 'STOP')] : [];
     setHTML(el,
@@ -889,11 +893,11 @@
       kv('nice', d.nice) + kv('up', C.fmtDuration(d.age)) + kv('cpu time', C.fmtDuration(d.cpu_time)) +
       kv('rss', C.fmtBytes(d.rss)) + kv('virt', C.fmtBytes(d.vsize)) + kv('peak', d.peak != null ? C.fmtBytes(d.peak) : null) +
       kv('swap', d.swap ? C.fmtBytes(d.swap) : null) + kv('fds', d.fds) +
-      kv('io r/w', d.io_read != null ? C.fmtBytes(d.io_read) + ' / ' + C.fmtBytes(d.io_write) : null) +
+      kv('io r/w', d.io_read != null ? nb(C.fmtBytes(d.io_read)) + ' / ' + nb(C.fmtBytes(d.io_write)) : null) +
       kv('ctx', d.ctx_vol != null ? d.ctx_vol + ' / ' + d.ctx_invol : null) +
       // paths and the child list span the row and wrap: an ellipsis with no
       // tooltip left them unreadable on touch screens
-      kv('cwd', d.cwd ? '<code>' + esc(d.cwd) + '</code>' : null, true) + kv('exe', d.exe ? '<code>' + esc(d.exe) + '</code>' : null, true) +
+      kv('cwd', d.cwd ? pathHTML(d.cwd) : null, true) + kv('exe', d.exe ? pathHTML(d.exe) : null, true) +
       (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + c.pid + '">' + c.pid + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : ''), true) : ''));
   }
 

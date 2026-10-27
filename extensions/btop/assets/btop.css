@@ -271,6 +271,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-d-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1px 14px; }
 .hbt-d-grid > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hbt-d-grid > .hbt-d-wide { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }   /* cwd, exe, children: whole value, wrapped */
+.hbt-d-wide a { white-space: nowrap; }   /* a child link wraps as a whole, at the comma */
 .hbt-sig { padding: 1px 7px; }
 .hbt-sig.hbt-danger { border-color: color-mix(in srgb, var(--hbt-hi) 60%, var(--border)); color: var(--hbt-tx-error); }
 .hbt-sig.hbt-armed {
@@ -357,7 +358,16 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   /* Tree view: ancestor guides at half width and the toggle without its
      brackets; the 44 px hit area is the ::after above, not the glyph. */
   .hbt-tree-mode .hbt-lead { letter-spacing: -.5ch; }
-  .hbt-twb { display: none; }
+  /* Without brackets a bare "-" reads as the tail of the branch line, so
+     phones draw a chevron instead. The button keeps its "[-]"/"[+]" text and
+     its aria-label. */
+  .hbt-twb, .hbt-twg { display: none; }
+  .hbt-tw[aria-expanded="true"]::before { content: "\25BE"; }   /* ▾ */
+  .hbt-tw[aria-expanded="false"]::before { content: "\25B8"; }  /* ▸ */
+  /* The 44 px touch zone (coarse pointers only) grows left over the branch
+     and guides instead of right over the process name, so a tap on a short
+     name like "bash" opens its detail rather than collapsing it. */
+  .hbt-tree-mode .hbt-tw::after { left: auto; right: -10px; }
 }
 @media (max-width: 374px) {
   /* "25/1024 · busiest 400 shown" fits a 320 px phone; with " procs" it clips.

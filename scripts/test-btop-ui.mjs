@@ -271,6 +271,7 @@ test('tree guides and toggle brackets are spans; the drawn prefix text is unchan
   const tw = h.$('tr[data-pid="42"] .hbt-tw');
   assert.equal(tw.textContent, '[-]');
   assert.equal(tw.querySelectorAll('.hbt-twb').length, 2, 'brackets are separate so phones can hide them');
+  assert.equal(tw.querySelector('.hbt-twg').textContent, '-', 'the glyph is separate so phones can draw a chevron');
   assert.equal(tw.getAttribute('aria-label'), 'Collapse busy');
 });
 
@@ -285,4 +286,22 @@ test('detail: cwd, exe and children span the row (wrapped, not ellipsized)', asy
   assert.deepEqual(wide, ['cwd', 'exe', 'children']);
   const user = [...h.w.document.querySelectorAll('[data-d="grid"] > div')].find((e) => e.textContent.startsWith('user'));
   assert.ok(user && !user.classList.contains('hbt-d-wide'), 'short fields keep the two-column grid');
+  const cwd = h.$('[data-d="grid"] .hbt-d-wide code');
+  assert.equal(cwd.textContent, h.detail.cwd, 'the path text is unchanged (copy/paste)');
+  assert.equal(cwd.querySelectorAll('wbr').length, (h.detail.cwd.match(/\//g) || []).length, 'a break point after every slash');
+});
+
+test('detail: a byte value keeps its number and unit together; hostile paths stay text', async () => {
+  const h = setup();
+  h.detail = { io_read: 2650000000, io_write: 1100000000, cwd: '/tmp/<img src=x>/a', user: 'u' };
+  await h.w.__hermesBtop.open();
+  await h.run();
+  h.$('tr[data-pid="42"]').click();
+  await flush();
+  const io = [...h.w.document.querySelectorAll('[data-d="grid"] > div')].find((e) => e.textContent.startsWith('io r/w'));
+  assert.ok(io, 'io row rendered');
+  assert.match(io.textContent, /^io r\/w \S+\u00a0\S+ \/ \S+\u00a0\S+$/, 'only the separator can wrap');
+  const cwd = h.$('[data-d="grid"] .hbt-d-wide code');
+  assert.equal(cwd.querySelector('img'), null, 'escaped before the break points are added');
+  assert.equal(cwd.textContent, '/tmp/<img src=x>/a');
 });
