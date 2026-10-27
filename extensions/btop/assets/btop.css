@@ -257,7 +257,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-tree { color: var(--muted); white-space: pre; }
 .hbt-tw { position: relative; appearance: none; border: 0; background: none; color: var(--hbt-tx-accent); font: inherit; padding: 0 2px 0 0; cursor: pointer; }
 .hbt-empty { text-align: center; padding: 18px !important; }
-.hbt-table td.hbt-empty { white-space: normal; text-overflow: clip; }   /* the hint wraps instead of ellipsizing */
+.hbt-table td.hbt-empty { white-space: normal; text-overflow: clip; overflow-wrap: anywhere; }   /* the hint wraps, long filter tokens included */
 
 .hbt-detail {
   border: 1px solid var(--border); border-radius: 5px; padding: 6px 8px; margin-bottom: 8px;
@@ -270,6 +270,9 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-d-cmd { margin: 4px 0; color: var(--text2, var(--text)); word-break: break-all; max-height: 4.5em; overflow: auto; }
 .hbt-d-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 1px 14px; }
 .hbt-d-grid > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.hbt-d-grid > .hbt-d-wide { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }   /* cwd, exe, children: whole value, wrapped */
+.hbt-d-wide a { white-space: nowrap; }   /* a child link wraps as a whole, at the comma */
+.hbt-d-wide code { word-break: normal; }   /* break paths at the <wbr> after each slash; overflow-wrap still splits an over-long segment */
 .hbt-sig { padding: 1px 7px; }
 .hbt-sig.hbt-danger { border-color: color-mix(in srgb, var(--hbt-hi) 60%, var(--border)); color: var(--hbt-tx-error); }
 .hbt-sig.hbt-armed {
@@ -307,10 +310,14 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   .hbt-iface { gap: 18px; }
   /* Table cells clip overflow (for the ellipsis), which would cut a toggle's
      44 px pseudo hit area down to the row height. In tree view rows are 44 px
-     tall instead, and the hit area starts at the cell edge so a top-level
-     toggle is not clipped on the left either. */
+     tall instead. The zone grows left from 10 px past the toggle, over the
+     branch and guides, and the margin keeps the process name clear of it:
+     otherwise a tap on a short name like "bash" (and, through Chromium's
+     touch adjustment, even its middle) collapsed the row instead of opening
+     its detail. */
   .hbt-tree-mode .hbt-pr td { padding-top: 14px; padding-bottom: 14px; }
-  .hbt-tw::after { left: -4px; transform: translateY(-50%); }
+  .hbt-tw::after { left: auto; right: -10px; transform: translateY(-50%); }
+  .hbt-tree-mode .hbt-tw { margin-right: 18px; }
 }
 
 /* ── responsive ───────────────────────────────────────────────────────────── */
@@ -344,6 +351,29 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   .hbt-hg-head, .hbt-hg { grid-template-columns: 12px minmax(5em, 1fr) 3em 4.2em 4.2em; }
   .hbt-hg .hbt-spark, .hbt-hg-spark-h { display: none; }
   .hbt-d-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .hbt-d-grid > div { white-space: normal; overflow-wrap: anywhere; }   /* no hover on touch: wrap rather than ellipsize */
   .hbt-title-r { max-width: 62%; }
   .hbt-proc .hbt-title-r { max-width: calc(100% - 84px); }   /* room for "N procs · busiest N shown" next to "proc" */
+  /* Give the program column what the fixed columns don't need here: pids are
+     at most 7 digits (pid_max 4194304), and the cpu cell is a bare number once
+     the sparkline is hidden. Per-core mode can pass 10000% on a big host, so
+     the cpu cell keeps room for 7 characters ("12345.6"). */
+  .hbt-c-pid { width: calc(7ch + 12px); }
+  .hbt-c-cpu { width: calc(7ch + 14px); }
+  /* Tree view: ancestor guides at half width (touch toggles: next block). */
+  .hbt-tree-mode .hbt-lead { letter-spacing: -.5ch; }
+}
+@media (max-width: 640px) and (pointer: coarse) {
+  /* Touch phones: without brackets a bare "-" reads as the tail of the branch
+     line, so draw a chevron instead. The button keeps its "[-]"/"[+]" text and
+     its aria-label. A mouse in a narrow window keeps the bracketed toggle,
+     whose glyphs are its whole click target. */
+  .hbt-twb, .hbt-twg { display: none; }
+  .hbt-tw[aria-expanded="true"]::before { content: "\25BE"; }   /* ▾ */
+  .hbt-tw[aria-expanded="false"]::before { content: "\25B8"; }  /* ▸ */
+}
+@media (max-width: 374px) {
+  /* "25/1024 · busiest 400 shown" fits a 320 px phone; with " procs" it clips.
+     From 375 px up the full "1234/4096 procs · busiest 400 shown" fits. */
+  .hbt-pc-cut .hbt-pc-word { display: none; }
 }

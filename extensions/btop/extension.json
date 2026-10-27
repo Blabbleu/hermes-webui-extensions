@@ -1,7 +1,7 @@
 {
   "id": "btop",
   "name": "btop",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "author": "blabbleu",
   "description": "A btop-style system monitor as its own WebUI page (rail icon). CPU graph with per-core meters and temps, memory/swap, disks with I/O, network up/down graphs, a Hermes box that groups agent/WebUI/cron/MCP/swe-pilot processes, and a sortable, filterable process table with tree view, details and signals. Data comes from a stdlib-only loopback sidecar reading /proc.",
   "assets": {

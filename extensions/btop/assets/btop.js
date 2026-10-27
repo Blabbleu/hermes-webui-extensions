@@ -53,6 +53,10 @@
   function esc(s) {
     return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
   }
+  // A pid is only ever a positive integer. Whatever answers on the sidecar
+  // port is not authenticated, and a pid also becomes part of request paths
+  // (/api/proc/<pid>, /api/proc/<pid>/signal), so anything else is dropped.
+  function okPid(v) { return Number.isSafeInteger(v) && v > 0; }
   function setText(el, text) { if (el && el.textContent !== text) el.textContent = text; }
 
   /* Live regions re-render every tick. Writing innerHTML would destroy a
@@ -404,6 +408,7 @@
       }
       st.warming = false;
       if (!body.now) throw Object.assign(new Error('empty snapshot'), { status: r.status });
+      if (Array.isArray(body.procs)) body.procs = body.procs.filter((p) => p && okPid(p.pid));
       if (body.boot !== st.boot) { st.history = []; st.boot = body.boot; }
       st.history = C.mergeHistory(st.history, body.history, 600);
       st.seq = body.seq;
@@ -443,12 +448,16 @@
   }
 
   async function loadDetail(pid) {
+    if (!okPid(pid)) return;
     st.detailAt = Date.now();
     try {
       const r = await fetch(BASE + '/api/proc/' + pid, { credentials: 'same-origin', cache: 'no-store' });
       const body = await r.json().catch(() => null);
       if (st.selected !== pid) return;
-      st.detail = r.ok ? body : { pid, gone: true, error: (body && body.error) || ('HTTP ' + r.status) };
+      // The detail must describe the process asked for: its pid feeds the
+      // signal request path.
+      if (r.ok && (!body || body.pid !== pid)) st.detail = { pid, gone: true, error: 'unexpected answer from the sidecar' };
+      else st.detail = r.ok ? body : { pid, gone: true, error: (body && body.error) || ('HTTP ' + r.status) };
     } catch (e) {
       if (st.selected === pid) st.detail = { pid, gone: true, error: String(e.message || e) };
     }
@@ -456,6 +465,7 @@
   }
 
   async function sendSignal(pid, sig, start) {
+    if (!okPid(pid)) return;
     try {
       const r = await fetch(BASE + '/api/proc/' + pid + '/signal', {
         method: 'POST', credentials: 'same-origin', headers: { 'Content-Type': 'application/json' },
@@ -694,7 +704,7 @@
     F.cpuFoot.innerHTML = '<span>load <b>' + l.map((x) => x.toFixed(2)).join(' ') + '</b></span>' +
       '<span>usr <b>' + (cpu.user || 0).toFixed(1) + '</b> sys <b>' + (cpu.system || 0).toFixed(1) + '</b> io <b>' + (cpu.iowait || 0).toFixed(1) + '</b>' +
       (cpu.steal ? ' st <b>' + cpu.steal.toFixed(1) + '</b>' : '') + '</span>' +
-      '<span>tasks <b>' + ((st.snap && st.snap.proc_total) || '–') + '</b> run <b>' + (now.procs_running || 0) + '</b></span>';
+      '<span>tasks <b>' + esc((st.snap && st.snap.proc_total) || '–') + '</b> run <b>' + esc(now.procs_running || 0) + '</b></span>';
     setText(F.uptime, 'up ' + C.fmtUptime(now.uptime));
   }
 
@@ -745,7 +755,7 @@
       return '<div class="hbt-disk-item' + (d.stalled ? ' hbt-is-stalled' : '') + '"><div class="hbt-disk-head"><b>' + esc(d.mount) + '</b><span class="hbt-dim">' + esc(d.dev) + ' · ' + esc(d.fs) + '</span>' + stalled +
         '<span class="hbt-val">' + (d.total ? C.fmtBytes(d.used) + ' / ' + C.fmtBytes(d.total) : '–') + '</span></div>' +
         '<div class="hbt-row">' + meter(p, 'grad') + '<span class="hbt-num">' + Math.round(p) + '%</span></div>' +
-        (d.read != null ? '<div class="hbt-io hbt-dim">r ' + C.fmtBytes(d.read, { rate: true }) + ' · w ' + C.fmtBytes(d.write, { rate: true }) + (d.busy ? ' · busy ' + d.busy + '%' : '') + '</div>' : '') +
+        (d.read != null ? '<div class="hbt-io hbt-dim">r ' + C.fmtBytes(d.read, { rate: true }) + ' · w ' + C.fmtBytes(d.write, { rate: true }) + (d.busy ? ' · busy ' + esc(d.busy) + '%' : '') + '</div>' : '') +
         '</div>';
     }).join('') + (disks.length ? '<div class="hbt-io-spark"><span class="hbt-dim">r</span><span class="hbt-spark">' + esc(rs) + '</span><span class="hbt-dim">w</span><span class="hbt-spark">' + esc(ws) + '</span></div>' : '<div class="hbt-dim">no block filesystems</div>');
   }
@@ -767,7 +777,7 @@
         const on = active === 'g:' + g.name;
         return '<button type="button" class="hbt-hg' + (on ? ' hbt-on' : '') + '" data-group="' + esc(g.name) + '" title="Filter processes to ' + esc(g.name) + '">' +
           '<i class="hbt-dot hbt-c-' + colorOf(g.name) + '"></i><span class="hbt-hg-name">' + esc(g.name) + '</span>' +
-          '<span>' + g.procs + '</span><span>' + (g.cpu / div).toFixed(1) + '%</span><span>' + C.fmtBytes(g.mem, { compact: true }) + '</span>' +
+          '<span>' + esc(g.procs) + '</span><span>' + (g.cpu / div).toFixed(1) + '%</span><span>' + C.fmtBytes(g.mem, { compact: true }) + '</span>' +
           '<span class="hbt-spark">' + esc(sp) + '</span></button>';
       }).join(''));
   }
@@ -776,6 +786,15 @@
     const procs = snap.procs || [];
     if (prefs.tree) return C.buildTree(procs, prefs.sort, prefs.desc, prefs.filter, st.collapsed);
     return C.sortProcs(C.filterProcs(procs, prefs.filter), prefs.sort, prefs.desc);
+  }
+
+  // Tree prefix = ancestor guides ("│ " / "  " per level) + this row's branch
+  // ("├─" / "└─"). The guides go in their own span so phones can draw them at
+  // half width (see .hbt-lead) without changing the prefix text.
+  function treePrefix(prefix) {
+    const s = String(prefix || '');
+    if (s.length <= 2) return esc(s);
+    return '<span class="hbt-lead">' + esc(s.slice(0, -2)) + '</span>' + esc(s.slice(-2));
   }
 
   function renderProcs(snap) {
@@ -791,7 +810,10 @@
     const sent = (snap.procs || []).length;
     // Say it on the page, not only in a tooltip (touch has no hover).
     const cut = tr && tr.procs ? ' · busiest ' + sent + ' shown' : '';
-    setText(F.procCount, (prefs.filter ? shown + '/' : '') + (snap.proc_total || 0) + ' procs' + cut);
+    // " procs" sits in its own span so narrow phones can drop it while the
+    // "busiest N shown" suffix needs the room (CSS, .hbt-pc-cut).
+    setHTML(F.procCount, (prefs.filter ? shown + '/' : '') + esc(snap.proc_total || 0) + '<span class="hbt-pc-word"> procs</span>' + esc(cut));
+    if (F.procCount) F.procCount.classList.toggle('hbt-pc-cut', !!cut);
     if (F.procCount) F.procCount.title = cut ? 'The sidecar trimmed the quietest processes to stay under the WebUI proxy size limit.' : '';
     $$('th[data-sort]', page).forEach((th) => {
       th.classList.toggle('hbt-sorted', th.dataset.sort === prefs.sort);
@@ -807,14 +829,14 @@
       if (p.dimmed) cls.push('hbt-dimrow');
       if (cpu >= 50) cls.push('hbt-hot'); else if (cpu >= 10) cls.push('hbt-warm');
       const tw = prefs.tree
-        ? '<span class="hbt-tree">' + esc(p.prefix || '') + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + p.pid + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + (p.collapsed ? '[+]' : '[-]') + '</button>' : '') + '</span>'
+        ? '<span class="hbt-tree">' + treePrefix(p.prefix) + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + esc(p.pid) + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + '<span class="hbt-twb">[</span><span class="hbt-twg">' + (p.collapsed ? '+' : '-') + '</span><span class="hbt-twb">]</span></button>' : '') + '</span>'
         : '';
       const dot = p.group ? '<i class="hbt-dot hbt-c-' + colorOf(p.group) + '" title="' + esc(p.group) + '"></i>' : '';
-      html += '<tr class="' + cls.join(' ') + '" data-pid="' + p.pid + '">' +
-        '<td class="hbt-c-pid">' + p.pid + '</td>' +
+      html += '<tr class="' + cls.join(' ') + '" data-pid="' + esc(p.pid) + '">' +
+        '<td class="hbt-c-pid">' + esc(p.pid) + '</td>' +
         '<td class="hbt-c-name">' + tw + dot + esc(p.name) + '</td>' +
         '<td class="hbt-c-cmd" title="' + esc(p.cmd) + '">' + esc(p.cmd || '[' + p.name + ']') + '</td>' +
-        '<td class="hbt-c-thr">' + p.threads + '</td>' +
+        '<td class="hbt-c-thr">' + esc(p.threads) + '</td>' +
         '<td class="hbt-c-user">' + esc(p.user) + '</td>' +
         '<td class="hbt-c-mem">' + C.fmtBytes(p.mem, { compact: true }) + '</td>' +
         '<td class="hbt-c-cpu"><span class="hbt-spark">' + esc(spark) + '</span>' + cpu.toFixed(1) + '</td></tr>';
@@ -844,16 +866,20 @@
     const ncpu = (st.snap && st.snap.now && st.snap.now.ncpu) || 1;
     const div = opt('perCore', false) ? 1 : ncpu;
     if (d.gone) {
-      setHTML(el, '<div class="hbt-d-head"><b>' + st.selected + '</b> <span class="hbt-dim">' + esc(d.error || 'process ended') + '</span>' +
+      setHTML(el, '<div class="hbt-d-head"><b>' + esc(st.selected) + '</b> <span class="hbt-dim">' + esc(d.error || 'process ended') + '</span>' +
         '<button type="button" class="hbt-btn" data-act="close-detail">close</button></div>');
       return;
     }
     // An armed confirm belongs to the exact process it was armed on.
     if (st.confirm && (st.confirm.pid !== d.pid || st.confirm.start !== d.start)) st.confirm = null;
-    const kv = (k, v) => (v == null || v === '' ? '' : '<div><span class="hbt-dim">' + k + '</span> ' + v + '</div>');
+    // Paths break after a slash (<wbr> is not copied with the text); a byte
+    // value keeps its number and unit on one line.
+    const pathHTML = (s) => '<code>' + esc(s).replace(/\//g, '/<wbr>') + '</code>';
+    const nb = (s) => String(s).replace(/ /g, '\u00a0');
+    const kv = (k, v, wide) => (v == null || v === '' ? '' : '<div' + (wide ? ' class="hbt-d-wide"' : '') + '><span class="hbt-dim">' + k + '</span> ' + v + '</div>');
     const sigs = st.snap && st.snap.signals ? ['TERM', 'INT', 'HUP', 'KILL', (String(d.state || '').startsWith('T') ? 'CONT' : 'STOP')] : [];
     setHTML(el,
-      '<div class="hbt-d-head" data-for-pid="' + d.pid + '" data-for-start="' + esc(d.start) + '"><b>' + d.pid + '</b> <b class="hbt-d-name">' + esc(d.name) + '</b>' +
+      '<div class="hbt-d-head" data-for-pid="' + esc(d.pid) + '" data-for-start="' + esc(d.start) + '"><b>' + esc(d.pid) + '</b> <b class="hbt-d-name">' + esc(d.name) + '</b>' +
         (d.group ? ' <span class="hbt-tag hbt-c-' + colorOf(d.group) + '">' + esc(d.group) + '</span>' : '') +
         '<span class="hbt-d-cpu"><span data-d="cpu"></span> <span class="hbt-spark" data-d="spark"></span></span>' +
         '<span class="hbt-grow"></span>' +
@@ -873,14 +899,16 @@
     });
     setText(part('cmd'), d.cmd || '[' + d.name + ']');
     setHTML(part('grid'),
-      kv('state', esc(d.state)) + kv('user', esc(d.user)) + kv('ppid', d.ppid) + kv('threads', d.threads) +
-      kv('nice', d.nice) + kv('up', C.fmtDuration(d.age)) + kv('cpu time', C.fmtDuration(d.cpu_time)) +
+      kv('state', esc(d.state)) + kv('user', esc(d.user)) + kv('ppid', esc(d.ppid)) + kv('threads', esc(d.threads)) +
+      kv('nice', esc(d.nice)) + kv('up', C.fmtDuration(d.age)) + kv('cpu time', C.fmtDuration(d.cpu_time)) +
       kv('rss', C.fmtBytes(d.rss)) + kv('virt', C.fmtBytes(d.vsize)) + kv('peak', d.peak != null ? C.fmtBytes(d.peak) : null) +
-      kv('swap', d.swap ? C.fmtBytes(d.swap) : null) + kv('fds', d.fds) +
-      kv('io r/w', d.io_read != null ? C.fmtBytes(d.io_read) + ' / ' + C.fmtBytes(d.io_write) : null) +
-      kv('ctx', d.ctx_vol != null ? d.ctx_vol + ' / ' + d.ctx_invol : null) +
-      kv('cwd', d.cwd ? '<code>' + esc(d.cwd) + '</code>' : null) + kv('exe', d.exe ? '<code>' + esc(d.exe) + '</code>' : null) +
-      (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + c.pid + '">' + c.pid + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : '')) : ''));
+      kv('swap', d.swap ? C.fmtBytes(d.swap) : null) + kv('fds', esc(d.fds)) +
+      kv('io r/w', d.io_read != null ? nb(C.fmtBytes(d.io_read)) + ' / ' + nb(C.fmtBytes(d.io_write)) : null) +
+      kv('ctx', d.ctx_vol != null ? esc(d.ctx_vol) + ' / ' + esc(d.ctx_invol) : null) +
+      // paths and the child list span the row and wrap: an ellipsis with no
+      // tooltip left them unreadable on touch screens
+      kv('cwd', d.cwd ? pathHTML(d.cwd) : null, true) + kv('exe', d.exe ? pathHTML(d.exe) : null, true) +
+      (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + esc(c.pid) + '">' + esc(c.pid) + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : ''), true) : ''));
   }
 
   function renderSide(snap) {
@@ -904,7 +932,7 @@
     const div = opt('perCore', false) ? 1 : (now.ncpu || 1);
     setHTML(F.sideHermes, groups.length ? groups.map((g) =>
       '<button type="button" class="hbt-side-g" data-group="' + esc(g.name) + '"><i class="hbt-dot hbt-c-' + colorOf(g.name) + '"></i>' + esc(g.name) +
-      '<span class="hbt-dim">' + g.procs + ' · ' + (g.cpu / div).toFixed(1) + '% · ' + C.fmtBytes(g.mem, { compact: true }) + '</span></button>').join('')
+      '<span class="hbt-dim">' + esc(g.procs) + ' · ' + (g.cpu / div).toFixed(1) + '% · ' + C.fmtBytes(g.mem, { compact: true }) + '</span></button>').join('')
       : '<div class="hbt-dim">none running</div>');
   }
 
@@ -968,6 +996,7 @@
   }
 
   function select(pid) {
+    if (pid != null && !okPid(pid)) return;
     if (pid == null || st.selected === pid) {
       st.selected = null; st.detail = null; st.confirm = null;
       renderDetail(); render();
@@ -1138,7 +1167,7 @@
       }
       refreshColors();
       window.__hermesBtop = {
-        version: '0.2.0',
+        version: '0.2.1',
         open: () => onNavClick(true),
         close: () => window.switchPanel('chat'),
         state: () => ({ active: st.active, paused: st.paused, seq: st.seq, history: st.history.length,
