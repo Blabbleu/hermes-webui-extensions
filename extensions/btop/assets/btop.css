@@ -310,10 +310,14 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   .hbt-iface { gap: 18px; }
   /* Table cells clip overflow (for the ellipsis), which would cut a toggle's
      44 px pseudo hit area down to the row height. In tree view rows are 44 px
-     tall instead, and the hit area starts at the cell edge so a top-level
-     toggle is not clipped on the left either. */
+     tall instead. The zone grows left from 10 px past the toggle, over the
+     branch and guides, and the margin keeps the process name clear of it:
+     otherwise a tap on a short name like "bash" (and, through Chromium's
+     touch adjustment, even its middle) collapsed the row instead of opening
+     its detail. */
   .hbt-tree-mode .hbt-pr td { padding-top: 14px; padding-bottom: 14px; }
-  .hbt-tw::after { left: -4px; transform: translateY(-50%); }
+  .hbt-tw::after { left: auto; right: -10px; transform: translateY(-50%); }
+  .hbt-tree-mode .hbt-tw { margin-right: 18px; }
 }
 
 /* ── responsive ───────────────────────────────────────────────────────────── */
@@ -367,13 +371,6 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
   .hbt-twb, .hbt-twg { display: none; }
   .hbt-tw[aria-expanded="true"]::before { content: "\25BE"; }   /* ▾ */
   .hbt-tw[aria-expanded="false"]::before { content: "\25B8"; }  /* ▸ */
-  /* The 44 px touch zone grows left over the branch and guides instead of
-     right over the process name, so a tap on a short name like "bash" opens
-     its detail rather than collapsing it. The margin keeps the name clear of
-     the zone; without it Chromium's touch adjustment still pulled a tap on
-     the middle of "bash" onto the toggle. */
-  .hbt-tree-mode .hbt-tw::after { left: auto; right: -10px; }
-  .hbt-tree-mode .hbt-tw { margin-right: 18px; }
 }
 @media (max-width: 374px) {
   /* "25/1024 · busiest 400 shown" fits a 320 px phone; with " procs" it clips.
