@@ -694,7 +694,7 @@
     F.cpuFoot.innerHTML = '<span>load <b>' + l.map((x) => x.toFixed(2)).join(' ') + '</b></span>' +
       '<span>usr <b>' + (cpu.user || 0).toFixed(1) + '</b> sys <b>' + (cpu.system || 0).toFixed(1) + '</b> io <b>' + (cpu.iowait || 0).toFixed(1) + '</b>' +
       (cpu.steal ? ' st <b>' + cpu.steal.toFixed(1) + '</b>' : '') + '</span>' +
-      '<span>tasks <b>' + ((st.snap && st.snap.proc_total) || '–') + '</b> run <b>' + (now.procs_running || 0) + '</b></span>';
+      '<span>tasks <b>' + esc((st.snap && st.snap.proc_total) || '–') + '</b> run <b>' + esc(now.procs_running || 0) + '</b></span>';
     setText(F.uptime, 'up ' + C.fmtUptime(now.uptime));
   }
 
@@ -745,7 +745,7 @@
       return '<div class="hbt-disk-item' + (d.stalled ? ' hbt-is-stalled' : '') + '"><div class="hbt-disk-head"><b>' + esc(d.mount) + '</b><span class="hbt-dim">' + esc(d.dev) + ' · ' + esc(d.fs) + '</span>' + stalled +
         '<span class="hbt-val">' + (d.total ? C.fmtBytes(d.used) + ' / ' + C.fmtBytes(d.total) : '–') + '</span></div>' +
         '<div class="hbt-row">' + meter(p, 'grad') + '<span class="hbt-num">' + Math.round(p) + '%</span></div>' +
-        (d.read != null ? '<div class="hbt-io hbt-dim">r ' + C.fmtBytes(d.read, { rate: true }) + ' · w ' + C.fmtBytes(d.write, { rate: true }) + (d.busy ? ' · busy ' + d.busy + '%' : '') + '</div>' : '') +
+        (d.read != null ? '<div class="hbt-io hbt-dim">r ' + C.fmtBytes(d.read, { rate: true }) + ' · w ' + C.fmtBytes(d.write, { rate: true }) + (d.busy ? ' · busy ' + esc(d.busy) + '%' : '') + '</div>' : '') +
         '</div>';
     }).join('') + (disks.length ? '<div class="hbt-io-spark"><span class="hbt-dim">r</span><span class="hbt-spark">' + esc(rs) + '</span><span class="hbt-dim">w</span><span class="hbt-spark">' + esc(ws) + '</span></div>' : '<div class="hbt-dim">no block filesystems</div>');
   }
@@ -767,7 +767,7 @@
         const on = active === 'g:' + g.name;
         return '<button type="button" class="hbt-hg' + (on ? ' hbt-on' : '') + '" data-group="' + esc(g.name) + '" title="Filter processes to ' + esc(g.name) + '">' +
           '<i class="hbt-dot hbt-c-' + colorOf(g.name) + '"></i><span class="hbt-hg-name">' + esc(g.name) + '</span>' +
-          '<span>' + g.procs + '</span><span>' + (g.cpu / div).toFixed(1) + '%</span><span>' + C.fmtBytes(g.mem, { compact: true }) + '</span>' +
+          '<span>' + esc(g.procs) + '</span><span>' + (g.cpu / div).toFixed(1) + '%</span><span>' + C.fmtBytes(g.mem, { compact: true }) + '</span>' +
           '<span class="hbt-spark">' + esc(sp) + '</span></button>';
       }).join(''));
   }
@@ -819,14 +819,14 @@
       if (p.dimmed) cls.push('hbt-dimrow');
       if (cpu >= 50) cls.push('hbt-hot'); else if (cpu >= 10) cls.push('hbt-warm');
       const tw = prefs.tree
-        ? '<span class="hbt-tree">' + treePrefix(p.prefix) + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + p.pid + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + '<span class="hbt-twb">[</span><span class="hbt-twg">' + (p.collapsed ? '+' : '-') + '</span><span class="hbt-twb">]</span></button>' : '') + '</span>'
+        ? '<span class="hbt-tree">' + treePrefix(p.prefix) + (p.hasKids ? '<button type="button" class="hbt-tw" data-toggle="' + esc(p.pid) + '" aria-expanded="' + !p.collapsed + '" aria-label="' + (p.collapsed ? 'Expand ' : 'Collapse ') + esc(p.name) + '">' + '<span class="hbt-twb">[</span><span class="hbt-twg">' + (p.collapsed ? '+' : '-') + '</span><span class="hbt-twb">]</span></button>' : '') + '</span>'
         : '';
       const dot = p.group ? '<i class="hbt-dot hbt-c-' + colorOf(p.group) + '" title="' + esc(p.group) + '"></i>' : '';
-      html += '<tr class="' + cls.join(' ') + '" data-pid="' + p.pid + '">' +
-        '<td class="hbt-c-pid">' + p.pid + '</td>' +
+      html += '<tr class="' + cls.join(' ') + '" data-pid="' + esc(p.pid) + '">' +
+        '<td class="hbt-c-pid">' + esc(p.pid) + '</td>' +
         '<td class="hbt-c-name">' + tw + dot + esc(p.name) + '</td>' +
         '<td class="hbt-c-cmd" title="' + esc(p.cmd) + '">' + esc(p.cmd || '[' + p.name + ']') + '</td>' +
-        '<td class="hbt-c-thr">' + p.threads + '</td>' +
+        '<td class="hbt-c-thr">' + esc(p.threads) + '</td>' +
         '<td class="hbt-c-user">' + esc(p.user) + '</td>' +
         '<td class="hbt-c-mem">' + C.fmtBytes(p.mem, { compact: true }) + '</td>' +
         '<td class="hbt-c-cpu"><span class="hbt-spark">' + esc(spark) + '</span>' + cpu.toFixed(1) + '</td></tr>';
@@ -869,7 +869,7 @@
     const kv = (k, v, wide) => (v == null || v === '' ? '' : '<div' + (wide ? ' class="hbt-d-wide"' : '') + '><span class="hbt-dim">' + k + '</span> ' + v + '</div>');
     const sigs = st.snap && st.snap.signals ? ['TERM', 'INT', 'HUP', 'KILL', (String(d.state || '').startsWith('T') ? 'CONT' : 'STOP')] : [];
     setHTML(el,
-      '<div class="hbt-d-head" data-for-pid="' + d.pid + '" data-for-start="' + esc(d.start) + '"><b>' + d.pid + '</b> <b class="hbt-d-name">' + esc(d.name) + '</b>' +
+      '<div class="hbt-d-head" data-for-pid="' + esc(d.pid) + '" data-for-start="' + esc(d.start) + '"><b>' + esc(d.pid) + '</b> <b class="hbt-d-name">' + esc(d.name) + '</b>' +
         (d.group ? ' <span class="hbt-tag hbt-c-' + colorOf(d.group) + '">' + esc(d.group) + '</span>' : '') +
         '<span class="hbt-d-cpu"><span data-d="cpu"></span> <span class="hbt-spark" data-d="spark"></span></span>' +
         '<span class="hbt-grow"></span>' +
@@ -889,16 +889,16 @@
     });
     setText(part('cmd'), d.cmd || '[' + d.name + ']');
     setHTML(part('grid'),
-      kv('state', esc(d.state)) + kv('user', esc(d.user)) + kv('ppid', d.ppid) + kv('threads', d.threads) +
-      kv('nice', d.nice) + kv('up', C.fmtDuration(d.age)) + kv('cpu time', C.fmtDuration(d.cpu_time)) +
+      kv('state', esc(d.state)) + kv('user', esc(d.user)) + kv('ppid', esc(d.ppid)) + kv('threads', esc(d.threads)) +
+      kv('nice', esc(d.nice)) + kv('up', C.fmtDuration(d.age)) + kv('cpu time', C.fmtDuration(d.cpu_time)) +
       kv('rss', C.fmtBytes(d.rss)) + kv('virt', C.fmtBytes(d.vsize)) + kv('peak', d.peak != null ? C.fmtBytes(d.peak) : null) +
-      kv('swap', d.swap ? C.fmtBytes(d.swap) : null) + kv('fds', d.fds) +
+      kv('swap', d.swap ? C.fmtBytes(d.swap) : null) + kv('fds', esc(d.fds)) +
       kv('io r/w', d.io_read != null ? nb(C.fmtBytes(d.io_read)) + ' / ' + nb(C.fmtBytes(d.io_write)) : null) +
-      kv('ctx', d.ctx_vol != null ? d.ctx_vol + ' / ' + d.ctx_invol : null) +
+      kv('ctx', d.ctx_vol != null ? esc(d.ctx_vol) + ' / ' + esc(d.ctx_invol) : null) +
       // paths and the child list span the row and wrap: an ellipsis with no
       // tooltip left them unreadable on touch screens
       kv('cwd', d.cwd ? pathHTML(d.cwd) : null, true) + kv('exe', d.exe ? pathHTML(d.exe) : null, true) +
-      (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + c.pid + '">' + c.pid + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : ''), true) : ''));
+      (d.children && d.children.length ? kv('children', d.children.slice(0, 12).map((c) => '<a href="#" data-pick="' + esc(c.pid) + '">' + esc(c.pid) + ' ' + esc(c.name) + '</a>').join(', ') + (d.children.length > 12 ? ' …' : ''), true) : ''));
   }
 
   function renderSide(snap) {
@@ -922,7 +922,7 @@
     const div = opt('perCore', false) ? 1 : (now.ncpu || 1);
     setHTML(F.sideHermes, groups.length ? groups.map((g) =>
       '<button type="button" class="hbt-side-g" data-group="' + esc(g.name) + '"><i class="hbt-dot hbt-c-' + colorOf(g.name) + '"></i>' + esc(g.name) +
-      '<span class="hbt-dim">' + g.procs + ' · ' + (g.cpu / div).toFixed(1) + '% · ' + C.fmtBytes(g.mem, { compact: true }) + '</span></button>').join('')
+      '<span class="hbt-dim">' + esc(g.procs) + ' · ' + (g.cpu / div).toFixed(1) + '% · ' + C.fmtBytes(g.mem, { compact: true }) + '</span></button>').join('')
       : '<div class="hbt-dim">none running</div>');
   }
 

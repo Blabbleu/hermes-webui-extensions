@@ -66,6 +66,7 @@ function setup() {
         now: { cpu: { total: h.cpu }, cores: [h.cpu], ncpu: 1, load: { load: [0, 0, 0] }, mem: {}, disks: [], net: {} },
         history: [{ s: seq, cpu: h.cpu }],
         procs: h.procs || [{ pid: 42, ppid: 1, name: 'busy', cmd: 'busy --loop', user: 'u', cpu: h.cpu, mem: 1, threads: 1 }], groups: [] };
+      if (h.patchSnap) h.patchSnap(body);
     }
     return { ok: status < 400, status, json: async () => body };
   };
@@ -253,6 +254,39 @@ test('the process count is text: a hostile proc_total cannot inject markup', asy
   assert.equal(pc.querySelector('img'), null, 'no element built from proc_total');
   assert.match(pc.textContent, /^<img src=x onerror="window.__pwned=1"> procs · busiest 1 shown$/);
   assert.ok(pc.querySelector('.hbt-pc-word'), 'the droppable word span is still there');
+});
+
+test('numbers from the sidecar are text everywhere, not markup', async () => {
+  // Whatever answers on the sidecar port is not authenticated, so a
+  // non-numeric value in a numeric field must not become markup. The leading
+  // quote also catches attribute-context sinks (data-pid="…").
+  const x = (f) => '"><img data-f="' + f + '" src=x>';
+  const h = setup();
+  h.procs = [
+    { pid: 42, ppid: 1, name: 'busy', cmd: 'busy', user: 'u', cpu: 1, mem: 1, threads: x('threads') },
+    { pid: x('pid'), ppid: 42, name: 'kid', cmd: 'kid', user: 'u', cpu: 1, mem: 1, threads: 1 },
+    { pid: 44, ppid: x('pid'), name: 'grandkid', cmd: 'grandkid', user: 'u', cpu: 1, mem: 1, threads: 1 },
+  ];
+  h.patchSnap = (b) => {
+    b.proc_total = x('proc_total');
+    b.now.procs_running = x('procs_running');
+    b.now.disks = [{ mount: '/', dev: 'sda', fs: 'ext4', total: 100, used: 50, read: 1, write: 1, busy: x('busy') }];
+    b.groups = [{ name: 'agent', procs: x('g.procs'), cpu: 1, mem: 1, own: 0 }];
+  };
+  h.detail = { pid: x('d.pid'), ppid: x('ppid'), threads: x('d.threads'), nice: x('nice'), fds: x('fds'),
+    ctx_vol: x('ctx_vol'), ctx_invol: x('ctx_invol'), children: [{ pid: x('c.pid'), name: 'kid' }], user: 'u' };
+  await h.w.__hermesBtop.open();
+  await h.run();
+  h.$('[data-act="tree"]').click();
+  await h.run();
+  h.$('tr[data-pid="42"]').click();
+  await flush();
+  await h.run();
+  const injected = [...h.w.document.querySelectorAll('img')].map((i) => i.dataset.f);
+  assert.deepEqual(injected, [], 'elements built from sidecar numbers: ' + injected.join(', '));
+  assert.match(h.$('[data-f="detail"]').textContent, /<img data-f="ppid" src=x>/, 'the hostile value is shown as text');
+  const sideG = h.$('.hbt-side-g');
+  assert.ok(sideG && /<img data-f="g\.procs"/.test(sideG.textContent), 'sidebar group count rendered as text');
 });
 
 test('tree guides and toggle brackets are spans; the drawn prefix text is unchanged', async () => {
