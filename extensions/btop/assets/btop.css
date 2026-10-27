@@ -272,6 +272,7 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
 .hbt-d-grid > div { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .hbt-d-grid > .hbt-d-wide { grid-column: 1 / -1; white-space: normal; overflow-wrap: anywhere; }   /* cwd, exe, children: whole value, wrapped */
 .hbt-d-wide a { white-space: nowrap; }   /* a child link wraps as a whole, at the comma */
+.hbt-d-wide code { word-break: normal; }   /* break paths at the <wbr> after each slash; overflow-wrap still splits an over-long segment */
 .hbt-sig { padding: 1px 7px; }
 .hbt-sig.hbt-danger { border-color: color-mix(in srgb, var(--hbt-hi) 60%, var(--border)); color: var(--hbt-tx-error); }
 .hbt-sig.hbt-armed {
@@ -355,19 +356,24 @@ main.main.showing-x-btop > #mainBtop { display: flex; }
      the cpu cell keeps room for 7 characters ("12345.6"). */
   .hbt-c-pid { width: calc(7ch + 12px); }
   .hbt-c-cpu { width: calc(7ch + 14px); }
-  /* Tree view: ancestor guides at half width and the toggle without its
-     brackets; the 44 px hit area is the ::after above, not the glyph. */
+  /* Tree view: ancestor guides at half width (touch toggles: next block). */
   .hbt-tree-mode .hbt-lead { letter-spacing: -.5ch; }
-  /* Without brackets a bare "-" reads as the tail of the branch line, so
-     phones draw a chevron instead. The button keeps its "[-]"/"[+]" text and
-     its aria-label. */
+}
+@media (max-width: 640px) and (pointer: coarse) {
+  /* Touch phones: without brackets a bare "-" reads as the tail of the branch
+     line, so draw a chevron instead. The button keeps its "[-]"/"[+]" text and
+     its aria-label. A mouse in a narrow window keeps the bracketed toggle,
+     whose glyphs are its whole click target. */
   .hbt-twb, .hbt-twg { display: none; }
   .hbt-tw[aria-expanded="true"]::before { content: "\25BE"; }   /* ▾ */
   .hbt-tw[aria-expanded="false"]::before { content: "\25B8"; }  /* ▸ */
-  /* The 44 px touch zone (coarse pointers only) grows left over the branch
-     and guides instead of right over the process name, so a tap on a short
-     name like "bash" opens its detail rather than collapsing it. */
+  /* The 44 px touch zone grows left over the branch and guides instead of
+     right over the process name, so a tap on a short name like "bash" opens
+     its detail rather than collapsing it. The margin keeps the name clear of
+     the zone; without it Chromium's touch adjustment still pulled a tap on
+     the middle of "bash" onto the toggle. */
   .hbt-tree-mode .hbt-tw::after { left: auto; right: -10px; }
+  .hbt-tree-mode .hbt-tw { margin-right: 18px; }
 }
 @media (max-width: 374px) {
   /* "25/1024 · busiest 400 shown" fits a 320 px phone; with " procs" it clips.
