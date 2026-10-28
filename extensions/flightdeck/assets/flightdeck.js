@@ -131,7 +131,7 @@
     state = sid ? loadState(sid) : null;
     view.expanded = null; view.gateOpen = null; view.confirmReset = 0;
     pollDelay = POLL_MIN;
-    pollCursor = 0;
+    pollCursor = 0; caughtUp.clear();
     render();
     if (sid) {
       const st = activeStreamId();
@@ -225,10 +225,15 @@
   const POLL_MIN = 4000, POLL_MAX = 20000;
   let pollDelay = POLL_MIN, lastPollAt = 0, pollBusy = false;
   let pollCursor = 0;        // rotates child-detail fetches so a fifth child isn't starved
+  // Finished children whose detail was already requested in this session: each
+  // gets one catch-up attempt, so an empty answer can't keep polling alive.
+  const caughtUp = new Set();
   let pollController = null, pollEpoch = 0;
+  const live = (a) => a.status === 'running' || a.status === 'starting';
+  const needsDetail = (a) => !!a.sessionId && (live(a) || (!a.summary && !caughtUp.has(a.sessionId)));
   function wantsAgentPoll() {
     if (!state || !setting('pollAgents') || document.hidden) return false;
-    return state.agents.some((a) => a.status === 'running' || a.status === 'starting');
+    return state.agents.some((a) => live(a) || needsDetail(a));
   }
   async function pollAgents(force) {
     if (!state || !currentSid || pollBusy || document.hidden || !setting('pollAgents')) return;
@@ -248,11 +253,13 @@
       const rows = [].concat(body.sessions || [], body.sidebar_reference_sessions || []);
       const before = JSON.stringify(state.agents);
       C.mergeChildSessions(state, rows, sid, Date.now());
-      // Fetch details for children that are still open or never had a final answer.
-      const eligible = state.agents.filter((a) => a.sessionId && (a.status === 'running' || a.status === 'starting' || !a.summary));
+      // Fetch details for children that are still open, or finished without a
+      // final answer and not yet asked; four at a time, rotating.
+      const eligible = state.agents.filter(needsDetail);
       const start = eligible.length ? pollCursor % eligible.length : 0;
       const need = eligible.slice(start).concat(eligible.slice(0, start)).slice(0, 4);
       pollCursor = start + need.length;
+      need.forEach((a) => { if (!live(a)) caughtUp.add(a.sessionId); });
       await Promise.all(need.map(async (a) => {
         try {
           const u = new URL(`api/session?session_id=${encodeURIComponent(a.sessionId)}&msg_limit=40&resolve_model=0`, document.baseURI || location.href).href;
@@ -280,17 +287,19 @@
     });
     ['turn:complete', 'turn:error', 'turn:cancel'].forEach((t) => ext.events.on(t, (e) => {
       const sid = currentSid;
-      const stream = sourceStream;
-      if ((e.sessionId && e.sessionId !== sid) || (e.streamId && e.streamId !== stream)) return;
+      // Match the turn, not just an open subscriber: ours can have closed (a
+      // 404 or a dropped connection) while Core kept running the turn.
+      const stream = (e && e.streamId) || sourceStream || (state && state.turn && state.turn.streamId) || null;
+      if ((e && e.sessionId && e.sessionId !== sid) || !stream) return;
       setTimeout(() => {
-        if (currentSid !== sid || sourceStream !== stream) return;
-        if (stream && state && state.turn && state.turn.streamId === stream && state.turn.status === 'running') {
+        if (currentSid !== sid) return;
+        if (state && state.turn && state.turn.streamId === stream && state.turn.status === 'running') {
           const event = t === 'turn:complete' ? 'stream_end' : t === 'turn:cancel' ? 'cancel' : 'apperror';
           C.reduce(state, { event, streamId: stream, at: Date.now(), data: { message: (e && e.message) || '' } }, opts());
           dirty = true; scheduleRender();
         }
-        if (stream) retireStream(stream);
-        closeStream();
+        retireStream(stream);
+        if (sourceStream === stream) closeStream();
         if (state && state.agents.length) pollAgents(true);
         saveNow();
       }, 1500);

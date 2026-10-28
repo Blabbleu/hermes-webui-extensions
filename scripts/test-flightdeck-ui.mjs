@@ -239,3 +239,28 @@ test('swimlane bars stay on the track when a child started on a clock ahead of o
   }
 });
 
+test('Core\'s completion settles the turn even after our subscriber has closed', async t => {
+  const h = await harness(t, { stream: 'one' }); h.emit('tool', { name: 'terminal', tid: 'a' });
+  h.sources[0].failClosed();
+  assert.equal(h.state().turn.status, 'running', 'Core still runs the turn, so a closed subscriber alone settles nothing');
+  h.events['turn:complete']({ sessionId: 'parent', streamId: 'one' }); await h.tick(1500);
+  assert.equal(h.state().turn.status, 'complete');
+  assert.equal(h.state().gate.recent[0].status, 'ran');
+  assert.equal(h.values['s:parent'].turn.status, 'complete', 'the settled turn was saved');
+});
+
+test('finished children each get one catch-up detail fetch, then polling stops', async t => {
+  const kids = Array.from({ length: 6 }, (_, i) => ({ session_id: 'kid' + i, parent_session_id: 'parent', source: 'subagent',
+    created_at: 1699999000 + i, updated_at: 1699999100 + i, is_streaming: false }));
+  const agents = kids.map((k, i) => ({ id: 'a' + i, goal: 'task ' + i, status: 'completed', sessionId: k.session_id,
+    startedAt: (1699999000 + i) * 1000, endedAt: (1699999100 + i) * 1000, summary: '' }));
+  const h = await harness(t, { initial: { 's:parent': { v: 1, agents } },
+    fetcher: url => Promise.resolve(response(url.includes('/api/session?') ? { session: { messages: [] } } : { sessions: kids })) });
+  await flush(); await h.tick(60000);
+  const details = () => h.requests.filter(r => r.url.includes('/api/session?')).map(r => new URL(r.url).searchParams.get('session_id'));
+  assert.deepEqual([...new Set(details())].sort(), kids.map(k => k.session_id).sort(), 'a finished child never got its detail');
+  const settled = h.requests.length; await h.tick(120000);
+  assert.equal(h.requests.length, settled, 'empty answers kept polling alive');
+  assert.equal(details().length, 6, 'a child was fetched twice');
+});
+
