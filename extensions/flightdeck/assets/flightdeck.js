@@ -406,6 +406,10 @@
     stripEl.appendChild(el('span', 'fd-strip-text'));
     stripEl.addEventListener('click', () => openFlightTab(true));
     wrap.parentNode.insertBefore(stripEl, wrap);
+    if (typeof MutationObserver === 'function') {
+      const watch = new MutationObserver(() => renderStrip());
+      DOCKED.forEach((id) => { const c = document.getElementById(id); if (c) watch.observe(c, { attributes: true, attributeFilter: ['class'] }); });
+    }
     return true;
   }
 
@@ -863,9 +867,14 @@
   // <html> only while a touch keyboard covers the viewport; the observer on
   // <html> style below re-renders when it changes.
   const keyboardUp = () => !!document.documentElement.style.getPropertyValue('--keyboard-bottom-inset');
+  // Core docks its approval, clarify and queue cards over the composer's top
+  // edge, which is where the strip sits. While one is up it matters more, so
+  // the strip steps aside instead of peeking out around the card.
+  const DOCKED = ['approvalCard', 'clarifyCard', 'queueCard'];
+  const dockedCardUp = () => DOCKED.some((id) => { const c = document.getElementById(id); return !!(c && c.classList.contains('visible')); });
   function renderStrip() {
     if (!stripEl) return;
-    const show = !!(isCompact() && setting('mobileStrip') && state && !keyboardUp() &&
+    const show = !!(isCompact() && setting('mobileStrip') && state && !keyboardUp() && !dockedCardUp() &&
       (state.main.isRunning || state.agents.some((a) => a.status === 'running') ||
        (state.receipt && Date.now() - (state.receipt.endedAt || 0) < 120000)));
     if (stripEl.hidden === show) stripEl.hidden = !show;

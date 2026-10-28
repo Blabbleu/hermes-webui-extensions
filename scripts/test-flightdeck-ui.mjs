@@ -264,3 +264,15 @@ test('finished children each get one catch-up detail fetch, then polling stops',
   assert.equal(details().length, 6, 'a child was fetched twice');
 });
 
+test('the phone strip steps aside while Core docks an approval, clarify or queue card over the composer', async t => {
+  const h = await harness(t, { compact: true, stream: 'one' }); h.emit('metering', { usage: { context_length: 1000, last_prompt_tokens: 500 } }); await h.tick(2);
+  const strip = h.query('#fdStrip'); assert.equal(strip.hidden, false);
+  for (const id of ['approvalCard', 'clarifyCard', 'queueCard']) {
+    const card = h.w.document.createElement('div'); card.id = id; card.className = 'visible';
+    h.query('#composerWrap').appendChild(card); h.w.__flightdeck.render();
+    assert.equal(strip.hidden, true, 'strip shown under ' + id);
+    card.remove(); h.w.__flightdeck.render();
+    assert.equal(strip.hidden, false, 'strip did not return after ' + id);
+  }
+});
+
