@@ -408,7 +408,7 @@
     wrap.parentNode.insertBefore(stripEl, wrap);
     if (typeof MutationObserver === 'function') {
       const watch = new MutationObserver(() => renderStrip());
-      DOCKED.forEach((id) => { const c = document.getElementById(id); if (c) watch.observe(c, { attributes: true, attributeFilter: ['class'] }); });
+      DOCKED.concat(TERMINAL).forEach((id) => { const c = document.getElementById(id); if (c) watch.observe(c, { attributes: true, attributeFilter: ['class', 'hidden'] }); });
     }
     return true;
   }
@@ -867,11 +867,14 @@
   // <html> only while a touch keyboard covers the viewport; the observer on
   // <html> style below re-renders when it changes.
   const keyboardUp = () => !!document.documentElement.style.getPropertyValue('--keyboard-bottom-inset');
-  // Core docks its approval, clarify and queue cards over the composer's top
+  // Core docks its approval, clarify and queue cards, and the composer
+  // terminal (open, or collapsed to its dock pill), over the composer's top
   // edge, which is where the strip sits. While one is up it matters more, so
-  // the strip steps aside instead of peeking out around the card.
+  // the strip steps aside instead of peeking out around it.
   const DOCKED = ['approvalCard', 'clarifyCard', 'queueCard'];
-  const dockedCardUp = () => DOCKED.some((id) => { const c = document.getElementById(id); return !!(c && c.classList.contains('visible')); });
+  const TERMINAL = 'composerTerminalPanel';
+  const dockedCardUp = () => DOCKED.some((id) => { const c = document.getElementById(id); return !!(c && c.classList.contains('visible')); }) ||
+    (() => { const t = document.getElementById(TERMINAL); return !!(t && !t.hidden && (t.classList.contains('is-open') || t.classList.contains('is-collapsed'))); })();
   function renderStrip() {
     if (!stripEl) return;
     const show = !!(isCompact() && setting('mobileStrip') && state && !keyboardUp() && !dockedCardUp() &&

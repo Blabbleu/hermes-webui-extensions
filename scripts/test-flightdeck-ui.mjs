@@ -274,5 +274,14 @@ test('the phone strip steps aside while Core docks an approval, clarify or queue
     card.remove(); h.w.__flightdeck.render();
     assert.equal(strip.hidden, false, 'strip did not return after ' + id);
   }
+  const term = h.w.document.createElement('div'); term.id = 'composerTerminalPanel'; term.hidden = true;
+  h.query('#composerWrap').appendChild(term); h.w.__flightdeck.render();
+  assert.equal(strip.hidden, false, 'a hidden terminal panel hid the strip');
+  for (const cls of ['is-collapsed', 'is-open']) {
+    term.hidden = false; term.className = 'composer-terminal-panel ' + cls; h.w.__flightdeck.render();
+    assert.equal(strip.hidden, true, 'strip shown with the terminal ' + cls);
+    term.hidden = true; term.className = 'composer-terminal-panel'; h.w.__flightdeck.render();
+    assert.equal(strip.hidden, false, 'strip did not return after the terminal closed');
+  }
 });
 
