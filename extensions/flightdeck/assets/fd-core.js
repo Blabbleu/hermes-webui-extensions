@@ -163,9 +163,15 @@
     t[key] = Math.max(0, (t[key] || 0) + delta);
   }
 
+  // The advisor setting is a list of words separated by `|`, matched without
+  // case anywhere in the tool name or delegate role. It is not a regular
+  // expression: a user-supplied pattern ran on every tool event, and a nested
+  // quantifier could stall the page.
   function compileAdvisor(pattern) {
-    if (!pattern) return null;
-    try { return new RegExp(pattern, 'i'); } catch (_) { return null; }
+    const words = String(pattern || '').split('|').map((w) => w.trim().toLowerCase().slice(0, 64))
+      .filter(Boolean).slice(0, 20);
+    if (!words.length) return null;
+    return { test: (text) => { const t = String(text || '').toLowerCase(); return words.some((w) => t.includes(w)); } };
   }
 
   function ensureTurn(st, at, streamId) {
@@ -459,6 +465,11 @@
       case 'stream_end':
         if (st.turn && st.turn.streamId === sid && st.turn.status === 'running') closeTurn(st, at, 'complete');
         break;
+      case 'stream_lost':
+        // Browser layer: the turn's stream is gone and no terminal frame was seen,
+        // so the outcome isn't known. Close it at its last recorded activity.
+        if (st.turn && st.turn.streamId === sid && st.turn.status === 'running') closeTurn(st, at, 'ended');
+        break;
       default:
         break;
     }
@@ -474,7 +485,7 @@
     st.gate.recent.forEach((c) => {
       if (c.status === 'running' || c.status === 'pending') {
         if (c.status === 'pending') tally(st, c.bucket, 'pending', -1);
-        c.status = status === 'complete' ? 'ran' : 'error'; c.endAt = at;
+        c.status = status === 'complete' || status === 'ended' ? 'ran' : 'error'; c.endAt = at;
       }
     });
     st.receipt = {
@@ -485,8 +496,9 @@
     };
     st.main.isRunning = false;
     st.main.compressing = false;
-    pushLog(st, at, 'turn', status === 'complete' ? 'done' : 'error',
-      `${status} · ${fmtDuration(st.receipt.durationMs)} · ${t.tools} tools · ${t.errors} errors`);
+    pushLog(st, at, 'turn', status === 'complete' ? 'done' : status === 'ended' ? 'info' : 'error',
+      status === 'ended' ? `ended · outcome not recorded · ${t.tools} tools`
+        : `${status} · ${fmtDuration(st.receipt.durationMs)} · ${t.tools} tools · ${t.errors} errors`);
   }
 
   /**

@@ -147,3 +147,95 @@ test('mobile strip opens drawer and exposes tab and meter semantics', async t =>
   assert.equal(tab.getAttribute('role'), 'tab'); assert.equal(tab.getAttribute('aria-selected'), 'true'); assert.equal(tab.getAttribute('aria-controls'), panel.id); assert.equal(panel.getAttribute('aria-labelledby'), tab.id);
   const meter = h.query('[role="meter"]'); assert.ok(meter); assert.equal(meter.getAttribute('aria-valuenow'), '50');
 });
+
+test('Enter and Space from inside the panel never reach Core\'s document shortcut', async t => {
+  const h = await harness(t, { stream: 'one' }); h.open(); h.emit('tool', { name: 'terminal', tid: 'a' }); await h.tick(2);
+  const seen = []; h.w.document.addEventListener('keydown', e => seen.push(e.key));
+  const press = (node, key) => node.dispatchEvent(new h.w.KeyboardEvent('keydown', { key, bubbles: true }));
+  press(h.w.document.body, 'Enter'); assert.deepEqual(seen, ['Enter'], 'positive control: body reaches the document');
+  seen.length = 0;
+  for (const node of [h.query('#fdPanel'), h.query('[data-fd-scroll="log"]'), h.query('[data-fd-gate="all"]'), h.query('[data-fd-reset]')]) {
+    press(node, 'Enter'); press(node, ' ');
+  }
+  assert.deepEqual(seen, [], 'Enter or Space escaped the panel');
+  press(h.query('#fdPanel'), 'Escape'); assert.deepEqual(seen, ['Escape'], 'other keys still propagate');
+});
+
+test('focus stays in the panel when columns rebuild or a reset empties it', async t => {
+  const h = await harness(t, { stream: 'one' }); h.open(); h.emit('tool', { name: 'terminal', tid: 'a' }); await h.tick(2);
+  const panel = h.query('#fdPanel');
+  h.query('[data-fd-gate="all"]').focus();
+  Object.defineProperty(panel, 'clientWidth', { configurable: true, get: () => 640 });
+  h.w.__flightdeck.render();
+  assert.equal(panel.dataset.layout, 'wide');
+  assert.equal(h.w.document.activeElement, h.query('[data-fd-gate="all"]'), 'focus left the rebuilt column');
+  const reset = h.query('[data-fd-reset]'); reset.focus(); reset.click(); h.query('[data-fd-reset]').click();
+  assert.equal(h.state().log.length, 0);
+  assert.equal(h.w.document.activeElement, panel, 'focus fell out of the emptied panel');
+});
+
+test('a turn saved as running is replayed from its stream and settles', async t => {
+  const saved = { v: 1, turn: { streamId: 'gone', startedAt: 1699999990000, status: 'running', tools: 1, edits: 0, errors: 0, denied: 0, agents: 0, open: 0 },
+    main: { isRunning: true }, seen: { gone: 3 }, log: [{ at: 1699999995000, who: 'terminal', kind: 'info', text: 'x' }],
+    gate: { recent: [{ tid: 'a', tool: 'terminal', status: 'running', bucket: 'shell', at: 1699999991000 }] } };
+  const done = await harness(t, { initial: { 's:parent': saved } });
+  assert.equal(done.sources.length, 1, 'the saved stream was not replayed');
+  const url = new URL(done.sources[0].url);
+  assert.equal(url.searchParams.get('stream_id'), 'gone'); assert.equal(url.searchParams.get('after_seq'), '3');
+  done.sources[0].emit('done', { usage: { duration_seconds: 4 } }, 4);
+  assert.equal(done.state().turn.status, 'complete'); assert.equal(done.state().receipt.durationMs, 4000);
+
+  const lost = await harness(t, { initial: { 's:parent': structuredClone(saved) } });
+  lost.sources[0].failClosed();
+  assert.equal(lost.state().turn.status, 'ended');
+  assert.equal(lost.state().receipt.endedAt, 1699999995000, 'closed at the last recorded activity');
+  assert.equal(lost.state().gate.recent[0].status, 'ran');
+  assert.equal(lost.values['s:parent'].turn.status, 'ended', 'the settled turn was saved');
+
+  const live = await harness(t, { initial: { 's:parent': structuredClone(saved) }, stream: 'gone' });
+  live.sources[0].failClosed();
+  assert.equal(live.state().turn.status, 'running', 'a stream Core still follows is not settled');
+});
+
+test('Core\'s terminal lifecycle settles a turn whose terminal frame never arrived', async t => {
+  for (const [event, status] of [['turn:complete', 'complete'], ['turn:cancel', 'cancelled'], ['turn:error', 'error']]) {
+    const h = await harness(t, { stream: 'one' }); h.emit('tool', { name: 'terminal', tid: 'a' });
+    h.events[event]({ sessionId: 'parent', streamId: 'one' }); await h.tick(1500);
+    assert.equal(h.state().turn.status, status, event);
+    assert.equal(h.sources[0].closed, true);
+  }
+});
+
+test('child-detail polling rotates so every running child is fetched', async t => {
+  const kids = Array.from({ length: 6 }, (_, i) => ({ session_id: 'kid' + i, parent_session_id: 'parent', source: 'subagent', created_at: 1700000000 + i, is_streaming: true }));
+  const h = await harness(t, { stream: 'one', fetcher: url => Promise.resolve(response(url.includes('/api/session?') ? { session: { messages: [] } } : { sessions: kids })) });
+  h.emit('tool', { name: 'delegate_task', tid: 'd', args: { tasks: kids.map((_, i) => ({ goal: 'task ' + i })) } });
+  await flush(); await h.tick(30000);
+  const asked = new Set(h.requests.filter(r => r.url.includes('/api/session?')).map(r => new URL(r.url).searchParams.get('session_id')));
+  assert.deepEqual([...asked].sort(), kids.map(k => k.session_id).sort(), 'a child was never fetched');
+});
+
+test('the phone strip steps aside while Core reports a touch keyboard over the viewport', async t => {
+  const h = await harness(t, { compact: true, stream: 'one' }); h.emit('metering', { usage: { context_length: 1000, last_prompt_tokens: 500 } }); await h.tick(2);
+  const strip = h.query('#fdStrip'); assert.equal(strip.hidden, false);
+  // jsdom doesn't report style mutations made through CSSStyleDeclaration to the
+  // <html> observer, so render directly here; the browser QA drives the observer.
+  h.w.document.documentElement.style.setProperty('--keyboard-bottom-inset', '320px'); h.w.__flightdeck.render();
+  assert.equal(strip.hidden, true, 'strip stayed up over the keyboard');
+  h.w.document.documentElement.style.removeProperty('--keyboard-bottom-inset'); h.w.__flightdeck.render();
+  assert.equal(strip.hidden, false, 'strip did not come back when the keyboard closed');
+});
+
+test('swimlane bars stay on the track when a child started on a clock ahead of ours', async t => {
+  const now = 1700000000000;
+  const agents = [0, 1, 2, 3].map(i => ({ id: 'a' + i, goal: 'task ' + i, status: i ? 'running' : 'completed', sessionId: 'k' + i,
+    startedAt: now - 60000 + i * 90000, endedAt: i ? null : now - 30000 }));
+  const h = await harness(t, { initial: { 's:parent': { v: 1, agents } } }); h.open(); await h.tick(2);
+  const bars = [...h.w.document.querySelectorAll('.fd-bar')];
+  assert.equal(bars.length, 4);
+  for (const b of bars) {
+    const left = parseFloat(b.style.left), width = parseFloat(b.style.width);
+    assert.ok(left >= 0 && width > 0 && left + width <= 100.01, `bar off the track: left ${left}% width ${width}%`);
+  }
+});
+

@@ -159,7 +159,7 @@
 /* Touch: 44 px targets; keyboard hints are noise without a keyboard. */
 @media (pointer: coarse) {
   .fd-fam, .fd-reset { min-height: 44px; padding: 0 12px; font-size: 12px; }
-  .fd-cells { min-height: 44px; }
+  .fd-cells { min-height: 44px; align-content: center; }
   .fd-card, .fd-lane { min-height: 44px; }
   .fd-open-link { display: inline-flex; align-items: center; min-height: 44px; }
   .fd-strip { min-height: 44px; }
@@ -172,3 +172,6 @@
 @media (prefers-reduced-motion: reduce) {
   .fd-panel *, .fd-panel *::before, .fd-strip, .fd-strip * { animation: none !important; transition: none !important; }
 }
+
+/* Core's tabs share the row; with Todos shown there are four at the default width. */
+.workspace-panel-tab.fd-tab { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }

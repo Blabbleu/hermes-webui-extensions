@@ -10,7 +10,7 @@ Flightdeck adds an instrument panel beside WebUI chat, adapted from [scasella/cl
 
 Once Flightdeck is available in your configured gallery, open **Settings → Extensions → Gallery**, find Flightdeck and install it. Reload the WebUI tab. Disable or uninstall it through **Settings → Extensions**. Gallery availability depends on it being published to the gallery you use; this source repository alone does not make it available there.
 
-For a manual install from the **source checkout**, run `python3 scripts/install.py`; it installs to the default WebUI state directory. For a different instance use `python3 scripts/install.py --state-dir /path/to/state`. Reload the tab. To remove that installation, run `python3 scripts/install.py --uninstall` (with the same `--state-dir` if used). The installer is in the source checkout, not the gallery package. These commands modify the chosen WebUI state directory; do not run them against an instance without permission. Flightdeck needs no server restart or sidecar. Configure layout, panel order, advisor pattern, phone strip and child tracking under **Settings → Extensions → Flightdeck**.
+Flightdeck needs no server restart or sidecar. Configure layout, panel order, advisor words, phone strip and child tracking under **Settings → Extensions → Flightdeck**. Advisor words are plain words separated by `|`, matched without case in the tool name or delegate role; they are not a regular expression.
 
 ## Data access and trust
 
@@ -26,13 +26,12 @@ While child tracking is enabled, normal polling runs for active children in a vi
 - Agent cards are matched to child sessions by parent and timing. Their completion, activity and answers are polled snapshots, not a complete live subagent event stream; matches and status can be wrong or delayed.
 - Only turns visible through the WebUI chat stream are observed; other clients' activity is not necessarily represented. Plan quota windows are not available.
 - Output tok/s is calculated from output-token deltas over estimated model time with tool time excluded. Replay, time to first token, incomplete metering and concurrent activity can affect it; it is not raw decode speed.
-- Requires a WebUI supporting extension bundles, extension settings/storage, turn events and the listed session/stream APIs. Browser-checked against WebUI v0.52.492 with seeded, synthetic demonstration data at desktop 1440 px and phones 390/320 px, in light/dark themes. This verifies the panel integration and layout, not an end-to-end model run. A subsequent real-turn attempt was cancelled during startup under severe host I/O/memory pressure before it emitted a tool event; Chromium could not start on that attempt. Screenshots use synthetic demo data, not user conversations.
+- Requires a WebUI supporting extension bundles, extension settings/storage, turn events and the listed session/stream APIs. Browser-checked against WebUI v0.52.492 with seeded, synthetic demonstration data at desktop 1440 px and phones 390/320 px, in light/dark themes, and against v0.52.568 with a live agent turn from a mock model provider (three rounds, twelve tool calls) at desktop 1440 px and phone 390 px. Screenshots use synthetic demo data, not user conversations.
+- A turn that was running when you left a conversation is replayed from WebUI's run journal when you come back. If WebUI no longer has that stream, the turn is closed at its last recorded activity as "ended", with its outcome unknown.
 
-## Tests and gallery staging
+## Tests
 
-In the source checkout, run `node --test tests/test-flightdeck-*.mjs` (the UI suite needs `jsdom`, also used by the gallery tests). The portable test replays recorded journals anonymized in `tests/fixtures`, with fixture data embedded so it also runs in the gallery's ES-module layout. The original `tests/core.test.js` is retained. The UI suite covers stream/session races, poll isolation, focus and pointer stability, two-tap reset, bounded storage, and mobile accessibility. Private source recordings in `tests/fixtures-private` are never needed or staged. Sanitization replaces user-entered data and tool output; inspect fixtures before publishing.
-
-For gallery review, stage into a **separate scratch gallery checkout** with `python3 scripts/stage-gallery.py /path/to/scratch-gallery`. It copies the entry, license, README, available screenshots and portable tests, then registers the tests. It does not publish or install anything. Run the gallery's validation, safety and behavior tests in that checkout before submitting it.
+From the root of this repository, after `npm install` (the UI suite uses `jsdom`), run `node --test scripts/test-flightdeck-core.mjs scripts/test-flightdeck-ui.mjs`. Both are registered in `scripts/behavior-tests.json`, so `node scripts/run-behavior-tests.mjs` runs them with the rest of the gallery. The core suite replays recorded turn journals that were anonymized before publication (user commands, goals, paths and tool output replaced; sequence, timing and outcome shape kept), embedded in the test file. The UI suite covers stream/session races, recovery of a turn left running, poll isolation and rotation, focus and pointer stability, keyboard containment against Core's approval shortcut, two-tap reset, bounded storage and mobile accessibility.
 
 ## License and attribution
 

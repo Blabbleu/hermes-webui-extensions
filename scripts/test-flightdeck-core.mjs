@@ -345,3 +345,32 @@ test('mask caps adversarial input before scanning', () => {
   assert.ok(result.length <= 4096);
   assert.ok(performance.now() - at < 1000);
 });
+
+test('advisor words are literal and cannot stall the page', () => {
+  const role = 'a'.repeat(40) + '!';
+  const st = C.defaultState('s');
+  const t0 = performance.now();
+  C.reduce(st, { event: 'tool', streamId: 'A', seq: 1, at: 1, data: { name: 'delegate_task', tid: 'd', args: { goal: 'x', role } } },
+    { advisorPattern: '(a+)+$' });
+  assert.ok(performance.now() - t0 < 200, 'a nested quantifier in the setting must not backtrack');
+  assert.equal(st.advisor.consults.length, 0, 'the setting is words, not a regular expression');
+  const hit = C.defaultState('s');
+  C.reduce(hit, { event: 'tool', streamId: 'A', seq: 1, at: 1, data: { name: 'delegate_task', tid: 'd', args: { goal: 'x', role: 'Code-REVIEWER' } } },
+    { advisorPattern: ' architect | review ' });
+  assert.equal(hit.advisor.consults.length, 1, 'words match without case, trimmed, anywhere in the role');
+});
+
+test('a lost stream closes its turn as ended, at the given time, with open calls settled', () => {
+  const st = C.defaultState('s');
+  C.reduce(st, { event: 'turn_start', streamId: 'A', at: 1000, data: {} });
+  C.reduce(st, { event: 'tool', streamId: 'A', seq: 1, at: 2000, data: { name: 'terminal', tid: 't', args: { command: 'x' } } });
+  C.reduce(st, { event: 'stream_lost', streamId: 'B', at: 3000, data: {} });
+  assert.equal(st.turn.status, 'running', 'another stream cannot close this turn');
+  C.reduce(st, { event: 'stream_lost', streamId: 'A', at: 3000, data: {} });
+  assert.equal(st.turn.status, 'ended');
+  assert.equal(st.receipt.status, 'ended');
+  assert.equal(st.receipt.endedAt, 3000);
+  assert.equal(st.gate.recent[0].status, 'ran');
+  assert.equal(st.main.isRunning, false);
+  assert.match(st.log.at(-1).text, /outcome not recorded/);
+});

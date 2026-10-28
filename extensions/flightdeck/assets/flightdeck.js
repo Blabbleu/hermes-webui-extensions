@@ -131,10 +131,16 @@
     state = sid ? loadState(sid) : null;
     view.expanded = null; view.gateOpen = null; view.confirmReset = 0;
     pollDelay = POLL_MIN;
+    pollCursor = 0;
     render();
     if (sid) {
       const st = activeStreamId();
       if (st) attach(st);
+      // A turn saved as running whose stream Core no longer follows (it ended
+      // while this page was away, or its terminal frame was missed): replay it.
+      // Core serves a finished stream from its run journal; a stream that is
+      // gone 404s and is settled in attach().
+      else if (state.turn && state.turn.status === 'running' && state.turn.streamId) attach(state.turn.streamId, undefined, true);
       if (state.agents.some((a) => !a.endedAt || !a.summary)) pollAgents(true);
     }
   }
@@ -187,9 +193,19 @@
       // Server closes after stream_end; a dead stream 404s. Don't spin.
       if (es.readyState === 2) {
         retireStream(streamId);
-        if (source === es) { source = null; sourceStream = null; }
+        if (source === es) { source = null; sourceStream = null; settleLost(streamId); }
       }
     };
+  }
+  // The stream closed for good without a terminal frame and Core isn't running
+  // it either: the turn is over, outcome unknown. Close it at its last activity
+  // so it doesn't read "running" forever.
+  function settleLost(streamId) {
+    const t = state && state.turn;
+    if (!t || t.streamId !== streamId || t.status !== 'running' || activeStreamId() === streamId) return;
+    const last = state.log.reduce((m, l) => Math.max(m, Number(l.at) || 0), t.startedAt || 0);
+    C.reduce(state, { event: 'stream_lost', streamId, at: last || Date.now(), data: {} }, opts());
+    dirty = true; saveNow(); scheduleRender();
   }
   function seqOf(lastEventId, streamId) {
     const m = String(lastEventId || '').match(/:(\d+)$/);
@@ -208,6 +224,7 @@
   // off (4 s -> 20 s) while nothing changes.
   const POLL_MIN = 4000, POLL_MAX = 20000;
   let pollDelay = POLL_MIN, lastPollAt = 0, pollBusy = false;
+  let pollCursor = 0;        // rotates child-detail fetches so a fifth child isn't starved
   let pollController = null, pollEpoch = 0;
   function wantsAgentPoll() {
     if (!state || !setting('pollAgents') || document.hidden) return false;
@@ -232,8 +249,10 @@
       const before = JSON.stringify(state.agents);
       C.mergeChildSessions(state, rows, sid, Date.now());
       // Fetch details for children that are still open or never had a final answer.
-      const need = state.agents.filter((a) => a.sessionId && (a.status === 'running' || a.status === 'starting' || !a.summary))
-        .slice(0, 4);
+      const eligible = state.agents.filter((a) => a.sessionId && (a.status === 'running' || a.status === 'starting' || !a.summary));
+      const start = eligible.length ? pollCursor % eligible.length : 0;
+      const need = eligible.slice(start).concat(eligible.slice(0, start)).slice(0, 4);
+      pollCursor = start + need.length;
       await Promise.all(need.map(async (a) => {
         try {
           const u = new URL(`api/session?session_id=${encodeURIComponent(a.sessionId)}&msg_limit=40&resolve_model=0`, document.baseURI || location.href).href;
@@ -265,6 +284,11 @@
       if ((e.sessionId && e.sessionId !== sid) || (e.streamId && e.streamId !== stream)) return;
       setTimeout(() => {
         if (currentSid !== sid || sourceStream !== stream) return;
+        if (stream && state && state.turn && state.turn.streamId === stream && state.turn.status === 'running') {
+          const event = t === 'turn:complete' ? 'stream_end' : t === 'turn:cancel' ? 'cancel' : 'apperror';
+          C.reduce(state, { event, streamId: stream, at: Date.now(), data: { message: (e && e.message) || '' } }, opts());
+          dirty = true; scheduleRender();
+        }
         if (stream) retireStream(stream);
         closeStream();
         if (state && state.agents.length) pollAgents(true);
@@ -313,6 +337,7 @@
       panelEl = el('div', 'fd-panel'); panelEl.id = 'fdPanel';
       panelEl.setAttribute('role', 'tabpanel'); panelEl.setAttribute('aria-labelledby', 'fdTab');
       panelEl.tabIndex = 0;
+      panelEl.addEventListener('keydown', containKeys);
       panelEl.addEventListener('keydown', onKey);
       panelEl.addEventListener('click', onClick);
       panelEl.addEventListener('pointerdown', onPointerDown);
@@ -464,7 +489,19 @@
     panelEl.replaceChildren(el('div', 'fd-' + mode, text));
   }
 
+  // Rebuilding columns, removing a box or swapping in a message drops focus to
+  // <body>, where Core's Enter = Allow once shortcut is armed. Put it back on
+  // the same control, or on the panel, which contains Enter (containKeys).
   function render() {
+    const had = panelEl && panelEl.contains(document.activeElement) ? document.activeElement : null;
+    renderPanel();
+    if (had && panelEl.isConnected && !panelEl.contains(document.activeElement)) {
+      const back = had.isConnected && panelEl.contains(had) ? had : panelEl;
+      try { back.focus({ preventScroll: true }); } catch (_) { back.focus(); }
+    }
+  }
+
+  function renderPanel() {
     renderStrip();
     if (!panelEl || !panelEl.classList.contains('fd-open')) return;
     const now = Date.now();
@@ -523,7 +560,7 @@
     row.stat = (k, v, cls, label) => {
       const s = el('span', 'fd-stat' + (cls ? ' ' + cls : ''));
       const kk = el('span', 'fd-k', k);
-      if (label) { kk.setAttribute('aria-hidden', 'true'); s.appendChild(sr(label + ' ')); }
+      if (label) { kk.setAttribute('aria-hidden', 'true'); s.title = label; s.appendChild(sr(label + ' ')); }
       s.appendChild(kk); s.appendChild(el('span', 'fd-v', v)); row.appendChild(s);
     };
     return row;
@@ -614,7 +651,7 @@
         fam.appendChild(btn);
       });
       b.appendChild(fam);
-      b.appendChild(el('div', 'fd-sub', 'Errors and approval outcomes are inferred from tool previews.'));
+      if (s.error || s.denied || s.approved || s.pending) b.appendChild(el('div', 'fd-sub', 'Errors and approval outcomes are inferred from tool previews.'));
       if (view.gateOpen) {
         const list = view.gateOpen === 'all' ? recent.slice(-8) : recent.filter((c) => c.bucket === view.gateOpen).slice(-5);
         const dl = el('ol', 'fd-drill');
@@ -709,7 +746,7 @@
       state.log.slice(-60).reverse().forEach((l) => {
         const li = el('li', 'fd-' + l.kind);
         const d = new Date(l.at);
-        const time = el('time', 'fd-at', `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`);
+        const time = el('time', 'fd-at', [d.getHours(), d.getMinutes(), d.getSeconds()].map((n) => String(n).padStart(2, '0')).join(':'));
         time.dateTime = d.toISOString();
         li.appendChild(time);
         li.appendChild(el('span', 'fd-who', l.who));
@@ -761,8 +798,12 @@
 
   function lanes(now) {
     const wrap = el('div', 'fd-lanes');
+    // Child start times come from the server's clock, which can run ahead of
+    // this browser's: span every recorded time and clamp, so a skewed card
+    // can't push its bar past the track.
     const t0 = Math.min(...state.agents.map((a) => a.startedAt || now));
-    const t1 = Math.max(now, ...state.agents.map((a) => a.endedAt || now));
+    const t1 = Math.max(now, ...state.agents.map((a) => Math.max(a.startedAt || 0, a.endedAt || now)));
+    const pct = (v) => Math.min(100, Math.max(0, v));
     state.agents.forEach((a, i) => {
       const on = view.expanded === a.id;
       const row = el('button', 'fd-lane fd-a-' + a.status + (on ? ' fd-on' : ''));
@@ -772,9 +813,10 @@
       row.appendChild(el('span', 'fd-num', String(i + 1)));
       const track = el('span', 'fd-track');
       const bar = el('span', 'fd-bar');
-      const L = ((a.startedAt - t0) / Math.max(1, t1 - t0)) * 100;
-      const R = (((a.endedAt || now) - t0) / Math.max(1, t1 - t0)) * 100;
-      bar.style.left = L.toFixed(2) + '%'; bar.style.width = Math.max(1.5, R - L).toFixed(2) + '%';
+      const L = pct(((a.startedAt - t0) / Math.max(1, t1 - t0)) * 100);
+      const R = pct(((Math.max(a.endedAt || now, a.startedAt || 0)) - t0) / Math.max(1, t1 - t0) * 100);
+      const W = Math.max(1.5, R - L);
+      bar.style.left = Math.min(L, 100 - W).toFixed(2) + '%'; bar.style.width = W.toFixed(2) + '%';
       track.appendChild(bar);
       row.appendChild(track);
       const clock = el('span', 'fd-clock');
@@ -807,9 +849,14 @@
   }
 
   let stripText = null;
+  // With the soft keyboard up the strip would take a large share of what's
+  // left of the screen, so it steps aside. Core sets --keyboard-bottom-inset on
+  // <html> only while a touch keyboard covers the viewport; the observer on
+  // <html> style below re-renders when it changes.
+  const keyboardUp = () => !!document.documentElement.style.getPropertyValue('--keyboard-bottom-inset');
   function renderStrip() {
     if (!stripEl) return;
-    const show = !!(isCompact() && setting('mobileStrip') && state &&
+    const show = !!(isCompact() && setting('mobileStrip') && state && !keyboardUp() &&
       (state.main.isRunning || state.agents.some((a) => a.status === 'running') ||
        (state.receipt && Date.now() - (state.receipt.endedAt || 0) < 120000)));
     if (stripEl.hidden === show) stripEl.hidden = !show;
@@ -847,6 +894,14 @@
     }
     if (ag) { view.expanded = view.expanded === ag.dataset.fdAgent ? null : ag.dataset.fdAgent; render(); return; }
     if (gate) { view.gateOpen = view.gateOpen === gate.dataset.fdGate ? null : gate.dataset.fdGate; render(); }
+  }
+
+  // Core answers a pending approval on Enter ("Allow once") unless the key's
+  // target is a control. The panel and the scrollable log take focus but
+  // aren't controls, so Enter and Space stop here; a focused button still
+  // activates, since that is the key's default action, not propagation.
+  function containKeys(e) {
+    if (e.key === 'Enter' || e.key === ' ' || e.key === 'Spacebar') e.stopPropagation();
   }
 
   function onKey(e) {

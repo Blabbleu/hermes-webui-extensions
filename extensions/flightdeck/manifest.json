@@ -79,7 +79,7 @@
         {
           "key": "advisorPattern",
           "type": "string",
-          "label": "Advisor pattern (regex on tool name or delegate role)",
+          "label": "Advisor words, separated by | (matched in the tool name or delegate role)",
           "default": "advisor|architect|review"
         },
         {
